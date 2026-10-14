@@ -1,13 +1,11 @@
-name: HomeDJ APKs
+name: HomeDJ APK
 on:
   pull_request:
     paths:
       - '.github/workflows/homedj-apks.yml'
       - '*.gradle.kts'
       - 'gradle.properties'
-      - 'shared/**'
-      - 'server/**'
-      - 'controller/**'
+      - 'app/**'
   workflow_dispatch:
 
 jobs:
@@ -26,13 +24,11 @@ jobs:
           gradle-version: '8.13'
       - name: Install Android SDK platform
         run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
-      - name: Unit test and build both APKs
-        run: gradle --no-daemon --console=plain :shared:test :server:assembleDebug :controller:assembleDebug
-      - name: Upload separate debug APKs
+      - name: Unit tests and debug APK
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest :app:assembleDebug
+      - name: Upload universal debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: homedj-phase1-debug-apks
-          path: |
-            server/build/outputs/apk/debug/*.apk
-            controller/build/outputs/apk/debug/*.apk
+          name: homedj-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error

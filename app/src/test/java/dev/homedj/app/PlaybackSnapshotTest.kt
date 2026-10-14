@@ -1,4 +1,4 @@
-package dev.homedj.shared
+package dev.homedj.app
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

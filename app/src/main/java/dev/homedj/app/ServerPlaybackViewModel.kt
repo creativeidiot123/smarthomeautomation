@@ -1,4 +1,4 @@
-package dev.homedj.server
+package dev.homedj.app
 
 import android.app.Application
 import android.content.ComponentName
@@ -10,7 +10,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import dev.homedj.shared.PlaybackSnapshot
+import dev.homedj.app.PlaybackSnapshot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ExecutionException
@@ -20,24 +20,28 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
     private val mutableStatus = MutableStateFlow(ServerPlaybackUiState())
     val status = mutableStatus.asStateFlow()
     private var controller: MediaController? = null
-    private var disposed = false
+    private var connectionVersion = 0
+    private var future: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             refresh(player)
         }
     }
-    private val controllerFuture = MediaController.Builder(
-        application,
-        SessionToken(application, ComponentName(application, PlaybackService::class.java)),
-    ).buildAsync()
-
-    init {
+    fun connect() {
+        if (future != null) return
+        val version = ++connectionVersion
+        val application = getApplication<Application>()
+        val controllerFuture = MediaController.Builder(
+            application,
+            SessionToken(application, ComponentName(application, PlaybackService::class.java)),
+        ).buildAsync()
+        future = controllerFuture
         controllerFuture.addListener({
-            if (disposed) return@addListener
+            if (version != connectionVersion) return@addListener
             try {
                 val connected = controllerFuture.get()
-                if (disposed) return@addListener
+                if (version != connectionVersion) return@addListener
                 controller = connected
                 connected.addListener(listener)
                 refresh(connected)
@@ -49,6 +53,15 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
                 mutableStatus.value = ServerPlaybackUiState(error = "Media service connection interrupted")
             }
         }, application.mainExecutor)
+    }
+
+    fun disconnect() {
+        connectionVersion++
+        controller?.removeListener(listener)
+        controller = null
+        future?.let(MediaController::releaseFuture)
+        future = null
+        mutableStatus.value = ServerPlaybackUiState()
     }
 
     fun playOrPause() {
@@ -90,10 +103,7 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
     }
 
     override fun onCleared() {
-        disposed = true
-        controller?.removeListener(listener)
-        controller = null
-        MediaController.releaseFuture(controllerFuture)
+        disconnect()
         super.onCleared()
     }
 }

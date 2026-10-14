@@ -1,4 +1,4 @@
-package dev.homedj.shared
+package dev.homedj.app
 
 /** A read-only view of the server-owned Media3 player. Not a second playback state owner. */
 data class PlaybackSnapshot(

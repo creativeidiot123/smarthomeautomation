@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "HomeDJ"
-include(":shared", ":server", ":controller")
+include(":app")

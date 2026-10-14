@@ -1,21 +1,21 @@
-# HomeDJ architecture (Phase 1 foundation)
+# HomeDJ architecture (single APK, Phase 1 foundation)
 
-## Authority and lifecycle
+## Ownership
 
-`PlaybackService : MediaLibraryService` owns the sole Media3 ExoPlayer, queue, audio focus and playback truth. The OS starts its media-playback foreground state when required by Media3. It releases its session/player in `onDestroy`.
+- `ModeStore`: **only persisted owner** of each device's selected role. It exposes a DataStore `Flow<HomeDjMode?>`. Null means no valid role selected, never an implicit Server mode.
+- `RoleViewModel`: lifecycle-owned projection/loading/error state for role changes. Double selection is first-wins until persisted. Switching roles is reversible and does not transfer server state to another phone.
+- `PlaybackService : MediaLibraryService`: sole ExoPlayer, queue, audio focus, session, foreground playback owner. Collects role preferences for its own lifetime and stops/clears playback in non-Server roles. It accepts platform-trusted/local media controllers only, not arbitrary other apps. Playback is not started by choosing Server mode.
+- `ServerPlaybackViewModel`: read-only playback projection and commands to Media3 session. Connects only while Server UI is composed; disconnects on mode switch or screen disposal, leaving Media3 foreground playback active when appropriate.
+- `HomeDjActivity`: system document picker, Android URI grant and Compose host. Controller mode has no local player or fake remote control. Role and playback state are presented from their owners.
 
-`ServerPlaybackViewModel` asynchronously connects via a Media3 `MediaController` and observes `Player.Listener`. It exposes a read-only `StateFlow<ServerPlaybackUiState>`; mutations are dispatched back to the session. On ViewModel disposal it removes its listener and releases the controller future. Compose only renders the state and dispatches callbacks.
+## Trust and lifecycle
 
-The Samsung activity uses Android's `OpenDocument` contract. The chosen content URI stays within the same app; the caller requests a persistent read grant before submitting the item. No storage enumeration/permission and no arbitrary file path are used. Playback is triggered only by a user action.
+No network listener exists, so no plaintext commands, remote pairing keys or untrusted remote execution exists. Local Media3 service connections are checked for system trust; future LAN pairing will separately enforce authenticated and encrypted remote requests.
 
-`PlaybackSnapshot` is a shared read-only projection, not an independent mutable player.
+Role change Server -> Controller is serialized by DataStore; the server service observes the persisted role and stops/clears its queue. On error persisting a new role, the original role stays active and the UI reports failure. If the process is killed before a preference write commits, the previous role remains authoritative on restart.
 
-## Security and background constraints
+No service is used to keep unrelated automation alive. Playback while locked depends on Media3 foreground policy and actual device battery restrictions; hardware tests remain pending. Media3 playback queue persistence/process restore is not yet implemented.
 
-Only the platform/local Media3 session is exposed. No LAN listener, authentication database, download runner, smart device worker, or general-purpose service has been created. Both applications disable backup and cleartext traffic. QR pairing and pinned TLS must be implemented before LAN commands are enabled.
+## Next Phase 1 boundary
 
-Media3 can continue foreground playback with the UI gone, but device power management and background-start restrictions remain. Hardware/device tests are pending. No library/database schema exists and this commit does not infer playback recovery across process death.
-
-## Next boundary
-
-Server-owned HTTPS transport and authenticated WebSocket state will project the same Media3 session into the OnePlus UI. NSD will advertise only when a listening socket actually exists. Timeouts and retries must be modeled with command IDs/server deduplication before remote mutations ship.
+NSD discovery, QR pairing, certificate-pinned TLS, authenticated command semantics and WebSocket projection must feed this same Media3 session. No second audio engine in Controller mode. Cross-device commands remain disabled until their authentication is enforceable.

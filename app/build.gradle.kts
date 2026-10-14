@@ -4,10 +4,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 android {
-    namespace = "dev.homedj.server"
+    namespace = "dev.homedj.app"
     compileSdk = 36
     defaultConfig {
-        applicationId = "dev.homedj.server"
+        applicationId = "dev.homedj.app"
         minSdk = 29
         targetSdk = 35
         versionCode = 1
@@ -21,7 +21,6 @@ android {
     buildFeatures { compose = true }
 }
 dependencies {
-    implementation(project(":shared"))
     implementation(platform("androidx.compose:compose-bom:2025.09.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
@@ -31,4 +30,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.3")
     implementation("androidx.media3:media3-exoplayer:1.8.1")
     implementation("androidx.media3:media3-session:1.8.1")
+    implementation("androidx.datastore:datastore-preferences:1.1.7")
+    testImplementation("junit:junit:4.13.2")
 }
