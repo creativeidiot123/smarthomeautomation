@@ -90,11 +90,12 @@ class HomeDjActivity : ComponentActivity() {
 
     private val castConsent =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == Activity.RESULT_OK && result.data != null &&
+            val grant = result.data
+            if (result.resultCode == Activity.RESULT_OK && grant != null &&
                 roleModel.state.value.mode == HomeDjMode.CONTROLLER
             ) {
                 try {
-                    LiveAudioCastService.start(this, result.resultCode, result.data!!)
+                    LiveAudioCastService.start(this, result.resultCode, grant)
                 } catch (error: Exception) {
                     Log.w("HomeDJCast", "Cast service start failed: " + error.javaClass.simpleName)
                     downloadMessage("Could not start audio casting.")
