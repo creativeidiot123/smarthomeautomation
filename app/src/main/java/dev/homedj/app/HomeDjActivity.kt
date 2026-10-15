@@ -187,6 +187,7 @@ class HomeDjActivity : ComponentActivity() {
                             onConnectYouTube = ::requestYouTubeAccess,
                             onDisconnectYouTube = ::disconnectYouTube,
                             onSelectPlaylist = youtube::selectPlaylist,
+                            onImportPlaylist = youtube::importPlaylist,
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
                         )
                     }
@@ -264,6 +265,7 @@ private fun ServerScreen(
     onConnectYouTube: () -> Unit,
     onDisconnectYouTube: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
+    onImportPlaylist: (String) -> Unit,
     onSwitch: () -> Unit,
 ) {
     ScreenFrame {
@@ -303,6 +305,7 @@ private fun ServerScreen(
             onConnect = onConnectYouTube,
             onDisconnect = onDisconnectYouTube,
             onSelectPlaylist = onSelectPlaylist,
+            onImportPlaylist = onImportPlaylist,
         )
         Text("Local playback works without YouTube. Remote Wi-Fi control is not enabled yet.")
         TextButton(onClick = onSwitch, enabled = !changing) { Text("Switch to Controller mode") }

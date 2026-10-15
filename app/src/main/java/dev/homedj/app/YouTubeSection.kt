@@ -9,8 +9,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -20,7 +25,9 @@ internal fun YouTubeSection(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
+    onImportPlaylist: (String) -> Unit,
 ) {
+    var playlistLink by rememberSaveable { mutableStateOf("") }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("YouTube playlists", style = MaterialTheme.typography.titleLarge)
@@ -35,6 +42,17 @@ internal fun YouTubeSection(
                     OutlinedButton(onClick = onConnect) { Text("Sync playlists") }
                     OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
                 }
+                OutlinedTextField(
+                    value = playlistLink,
+                    onValueChange = { if (it.length <= 2048) playlistLink = it },
+                    label = { Text("YouTube Music playlist link") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Button(
+                    onClick = { onImportPlaylist(playlistLink) },
+                    enabled = !state.loadingPlaylists && playlistLink.isNotBlank(),
+                ) { Text("Import playlist link") }
                 when {
                     state.loadingPlaylists -> Text("Loading playlists…")
                     state.playlists.isEmpty() -> Text("No playlists found for this YouTube channel.")

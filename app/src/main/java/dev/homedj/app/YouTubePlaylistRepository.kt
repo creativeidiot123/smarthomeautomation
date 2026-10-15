@@ -59,6 +59,14 @@ internal class YouTubePlaylistRepository {
     suspend fun playlists(token: String): List<YouTubePlaylist> =
         loadAll(token, "playlists", "mine=true", YouTubeResponseParser::playlists)
 
+    suspend fun playlistById(token: String, playlistId: String): YouTubePlaylist? =
+        loadAll(
+            token,
+            "playlists",
+            "id=" + URLEncoder.encode(playlistId, "UTF-8"),
+            YouTubeResponseParser::playlists,
+        ).firstOrNull()
+
     suspend fun tracks(token: String, playlistId: String): List<YouTubeTrack> =
         loadAll(
             token,
