@@ -77,7 +77,7 @@ internal fun RemoteControllerScreen(
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var host by remember { mutableStateOf(state.host) }
     var code by remember { mutableStateOf(state.pairingCode) }
-    ScreenFrame("OnePlus · Controller") {
+    ScreenFrame("OnePlus · Controller", navigation = { HomeDjTabs(tab) { tab = it } }) {
         Text(
             if (state.connected) "Connected to Samsung over private Wi-Fi"
             else "Not connected to Samsung",
@@ -99,7 +99,6 @@ internal fun RemoteControllerScreen(
             }
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        HomeDjTabs(tab) { tab = it }
         when (tab) {
             0 -> {
                 Card(
@@ -193,6 +192,7 @@ internal fun RemoteControllerScreen(
                         }
                         state.playlists.forEach { playlist ->
                             Card(onClick = { onBrowseTracks(playlist.id) },
+                                enabled = state.connected,
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(20.dp)) {
                                 Column(Modifier.padding(16.dp),
