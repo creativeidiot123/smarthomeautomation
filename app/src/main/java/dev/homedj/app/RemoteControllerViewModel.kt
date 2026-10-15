@@ -1,6 +1,10 @@
 package dev.homedj.app
 
 import android.app.Application
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -53,8 +57,32 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     private var connection: Job? = null
     private var generation = 0
     private var browseVersion = 0
+    private var started = false
+    private var networkRegistered = false
+    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
+    private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            viewModelScope.launch {
+                if (started && connection?.isActive == true) {
+                    val current = mutableState.value
+                    connect(current.host, current.pairingCode)
+                }
+            }
+        }
+    }
 
     fun start() {
+        if (started) return
+        started = true
+        try {
+            connectivity.registerNetworkCallback(
+                NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
+                wifiCallback,
+            )
+            networkRegistered = true
+        } catch (failure: RuntimeException) {
+            Log.w("HomeDJRemote", "Wi-Fi reconnect listener unavailable: " + failure.javaClass.simpleName)
+        }
         val current = mutableState.value
         if (current.host.isNotBlank() && current.pairingCode.isNotBlank()) {
             connect(current.host, current.pairingCode)
@@ -73,29 +101,42 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             )
             return
         }
-        mutableState.value = RemoteUiState(host = address, pairingCode = code.trim())
+        val previous = mutableState.value
+        val samePeer = previous.host == address && previous.pairingCode == code.trim()
+        mutableState.value = if (samePeer) {
+            previous.copy(connected = false, browserLoading = false, error = null)
+        } else RemoteUiState(host = address, pairingCode = code.trim())
         connection = viewModelScope.launch {
+            var failures = 0
             while (isActive && version == generation) {
                 try {
                     val response = exchange(address, key, "status")
                     if (!response.optBoolean("ok")) throw IllegalStateException("Rejected")
                     if (version != generation) break
                     val firstConnection = !mutableState.value.connected
-                    prefs.saveClient(address, code)
+                    failures = 0
+                    if (prefs.savedHost != address || prefs.savedClientKey != code.trim()) {
+                        prefs.saveClient(address, code)
+                    }
                     show(response)
-                    if (firstConnection) browse("catalog")
+                    if (firstConnection) {
+                        val currentBrowse = mutableState.value
+                        browse(currentBrowse.browserMode, currentBrowse.selectedPlaylistId)
+                    }
                 } catch (failure: CancellationException) {
                     throw failure
                 } catch (failure: Exception) {
                     if (version != generation) break
-                    Log.w("HomeDJRemote", "Remote status failed: " + failure.javaClass.simpleName)
+                    failures++
+                    Log.w("HomeDJRemote", "Remote status failed: " +
+                        failure.javaClass.simpleName + " consecutive=" + failures.coerceAtMost(6))
                     browseVersion++
                     mutableState.value = mutableState.value.copy(
                         connected = false, browserLoading = false,
                         error = "Server unavailable or pairing code incorrect."
                     )
                 }
-                delay(2_500)
+                delay(statusRetryDelayMillis(failures))
             }
         }
     }
@@ -253,6 +294,11 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun stop() {
+        started = false
+        if (networkRegistered) {
+            connectivity.unregisterNetworkCallback(wifiCallback)
+            networkRegistered = false
+        }
         generation++
         browseVersion++
         connection?.cancel()
@@ -264,4 +310,11 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         stop()
         super.onCleared()
     }
+}
+
+/** Fast initial recovery, capped retries while offline, slower healthy polling. */
+internal fun statusRetryDelayMillis(consecutiveFailures: Int): Long = when {
+    consecutiveFailures <= 0 -> 6_000L
+    consecutiveFailures >= 6 -> 30_000L
+    else -> 1_000L shl (consecutiveFailures - 1)
 }

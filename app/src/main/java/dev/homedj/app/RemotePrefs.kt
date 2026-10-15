@@ -1,9 +1,9 @@
 package dev.homedj.app
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import java.net.Inet4Address
-import java.net.NetworkInterface
-import java.util.Collections
 
 /** Device-local pairing configuration, never backed up or sent in plaintext. */
 internal class RemotePrefs(context: Context) {
@@ -38,12 +38,19 @@ internal class RemotePrefs(context: Context) {
                 (bytes[0] == 192 && bytes[1] == 168)
         }
 
-        fun localAddress(): String =
+        fun localAddress(context: Context): String =
             runCatching {
-                Collections.list(NetworkInterface.getNetworkInterfaces())
+                val manager = context.getSystemService(ConnectivityManager::class.java)
+                (listOfNotNull(manager.activeNetwork) + manager.allNetworks.toList())
+                    .distinct()
                     .asSequence()
-                    .filter { it.isUp && !it.isLoopback }
-                    .flatMap { Collections.list(it.inetAddresses).asSequence() }
+                    .filter {
+                        manager.getNetworkCapabilities(it)
+                            ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                    }
+                    .mapNotNull { manager.getLinkProperties(it) }
+                    .flatMap { it.linkAddresses.asSequence() }
+                    .map { it.address }
                     .filterIsInstance<Inet4Address>()
                     .map { it.hostAddress.orEmpty() }
                     .firstOrNull(::validPrivateIpv4)

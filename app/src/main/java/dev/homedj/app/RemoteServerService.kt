@@ -55,6 +55,9 @@ class RemoteServerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Android may recreate an opted-in remote listener after process death.
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
     override fun onCreate() {
         super.onCreate()
         val manager = getSystemService(NotificationManager::class.java)
@@ -228,9 +231,16 @@ class RemoteServerService : Service() {
         val running = MutableStateFlow(false)
         fun setEnabled(context: Context, enabled: Boolean) {
             val app = context.applicationContext
-            RemotePrefs(app).enabled = enabled
-            if (enabled) app.startForegroundService(Intent(app, RemoteServerService::class.java))
-            else app.stopService(Intent(app, RemoteServerService::class.java))
+            val prefs = RemotePrefs(app)
+            val previous = prefs.enabled
+            prefs.enabled = enabled
+            try {
+                if (enabled) app.startForegroundService(Intent(app, RemoteServerService::class.java))
+                else app.stopService(Intent(app, RemoteServerService::class.java))
+            } catch (failure: RuntimeException) {
+                prefs.enabled = previous
+                throw failure
+            }
         }
     }
 }

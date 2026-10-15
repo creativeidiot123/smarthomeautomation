@@ -312,7 +312,7 @@ class HomeDjActivity : ComponentActivity() {
                             status = status,
                             youtubeState = youtubeState,
                             remoteRunning = remoteRunning,
-                            remoteAddress = RemotePrefs.localAddress(),
+                            remoteAddress = RemotePrefs.localAddress(this@HomeDjActivity),
                             remotePairingCode = RemotePrefs(this@HomeDjActivity).serverKey(),
                             onRemoteToggle = ::setRemoteEnabled,
                             changing = role.changing,
