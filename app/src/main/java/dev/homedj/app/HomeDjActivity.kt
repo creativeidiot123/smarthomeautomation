@@ -213,10 +213,7 @@ class HomeDjActivity : ComponentActivity() {
             !NativeAudioSource.validId(track.id)) return
         lifecycleScope.launch {
             try {
-                val local = OfflineAudioLibrary.localMedia(this@HomeDjActivity, track)
-                val selected = local ?: withContext(Dispatchers.IO) {
-                    LocalAudio(Uri.parse(NativeAudioSource.resolve(track.id).url), track.title)
-                }
+                val selected = LocalAudio(HomeDjMediaResolver.trackUri(track.id), track.title)
                 if (roleModel.state.value.mode == HomeDjMode.SERVER) playback.playPickedAudio(listOf(selected))
             } catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
