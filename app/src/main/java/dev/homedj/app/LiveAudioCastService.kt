@@ -159,8 +159,11 @@ class LiveAudioCastService : Service() {
                         val read = active.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
                         if (stopping || read <= 0) throw IOException("Audio capture stopped")
                         if (!started) {
-                            started = true
-                            state.value = CastState(active = true)
+                            synchronized(recorderLock) {
+                                if (stopping) throw IOException("Audio casting stopped")
+                                started = true
+                                state.value = CastState(active = true)
+                            }
                         }
                         frame.copyOf(read - read % 4).takeIf { it.isNotEmpty() }
                     }
