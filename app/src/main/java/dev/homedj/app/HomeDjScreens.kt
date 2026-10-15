@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -61,21 +62,30 @@ internal fun HomeDjTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-internal fun ScreenFrame(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Scaffold { insets ->
+internal fun ScreenFrame(
+    title: String,
+    navigation: @Composable () -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Scaffold(
+        topBar = {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow)) {
+                Column(
+                    Modifier.fillMaxWidth().statusBarsPadding()
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("HomeDJ", style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary)
+                    Text(title, style = MaterialTheme.typography.headlineMedium)
+                }
+                navigation()
+            }
+        },
+    ) { insets ->
         Column(
             Modifier.fillMaxSize().padding(insets).imePadding().verticalScroll(rememberScrollState()),
         ) {
-            Column(
-                Modifier.fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text("HomeDJ", style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary)
-                Text(title, style = MaterialTheme.typography.headlineMedium)
-            }
             Column(
                 Modifier.fillMaxWidth().widthIn(max = 760.dp)
                     .align(Alignment.CenterHorizontally).padding(16.dp),
@@ -158,13 +168,12 @@ internal fun ServerScreen(
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showPlaylists by rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
-    ScreenFrame("Samsung · Server") {
+    ScreenFrame("Samsung · Server", navigation = { HomeDjTabs(tab) { tab = it } }) {
         Text(
             if (status.connected) "Ready to play on this phone"
             else "Connecting to the music player…",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        HomeDjTabs(tab) { tab = it }
         when (tab) {
             0 -> {
                 Card(
