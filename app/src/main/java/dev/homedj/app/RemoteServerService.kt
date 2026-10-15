@@ -122,7 +122,7 @@ class RemoteServerService : Service() {
                                 DataOutputStream(socket.getOutputStream()),
                                 key,
                                 action = { request -> handle(request, socket) },
-                                onPcm = { next -> LiveAudioSink.play(next) },
+                                onPcm = { next -> LiveAudioSink.play(this@RemoteServerService, next) },
                             )
                         }
                     } catch (failure: Exception) {
