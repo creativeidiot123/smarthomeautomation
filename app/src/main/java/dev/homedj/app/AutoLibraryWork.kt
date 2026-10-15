@@ -26,6 +26,20 @@ internal class AutoLibraryConfig(context: Context) {
     private val prefs = app.getSharedPreferences("homedj_auto_library", Context.MODE_PRIVATE)
     val enabled: Boolean get() = prefs.getBoolean("enabled", false)
     val playlistIds: Set<String> get() = prefs.getStringSet("playlists", emptySet()).orEmpty().toSet()
+    private val accountKey: String? get() = prefs.getString("accountKey", null)
+
+    /** Auto-download selection belongs to exactly one Google account. */
+    fun bindAccount(accountName: String) {
+        val next = SavedPlaylistStore.accountKey(accountName)
+        if (accountKey != next) {
+            prefs.edit().putString("accountKey", next).remove("playlists")
+                .putBoolean("enabled", false).commit()
+            schedule()
+        }
+    }
+
+    fun isCurrent(accountName: String): Boolean =
+        enabled && accountKey == SavedPlaylistStore.accountKey(accountName)
 
     fun setEnabled(value: Boolean) {
         prefs.edit().putBoolean("enabled", value).apply()
@@ -92,11 +106,16 @@ class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : Corout
                 return Result.success()
             }
             val playlists = YouTubePlaylistRepository().playlists(token)
-            if (!config.enabled || ModeStore(app).mode.first() != HomeDjMode.SERVER) return Result.success()
-            val saved = SavedPlaylistStore.shared(app).replaceOwned(account, playlists)
+            if (!config.isCurrent(account) || ModeStore(app).mode.first() != HomeDjMode.SERVER) {
+                return Result.success()
+            }
+            val saved = SavedPlaylistStore.shared(app).replaceOwned(account, playlists) {
+                config.isCurrent(account)
+            }
+            if (!config.isCurrent(account)) return Result.success()
             Log.i("HomeDJAuto", "Playlist metadata refreshed: count=" + saved.playlists.size)
             val selected = config.playlistIds.intersect(saved.playlists.map { it.id }.toSet()).take(20)
-            if (selected.isNotEmpty() && config.enabled && 
+            if (selected.isNotEmpty() && config.isCurrent(account) && 
                 app.checkSelfPermission(TermuxPlaylistDownloads.PERMISSION) == PackageManager.PERMISSION_GRANTED &&
                 TermuxPlaylistDownloads.isInstalled(app)) {
                 val accepted = TermuxPlaylistDownloads.startBatch(app, selected)

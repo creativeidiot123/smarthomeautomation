@@ -97,6 +97,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         trackJob?.cancel()
         accessToken = token
         authorizedAccount = account
+        if (account?.name.isNullOrBlank()) auto.setEnabled(false)
+        else auto.bindAccount(account.name)
         mutableState.value = YouTubeUiState(authorized = true, autoEnabled = auto.enabled, autoDownloadIds = auto.playlistIds)
         refresh()
     }

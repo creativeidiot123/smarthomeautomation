@@ -27,6 +27,12 @@ class SavedPlaylistCodecTest {
         }
     }
 
+    @Test fun accountFingerprintIsDeterministicAcrossCase() {
+        val key = SavedPlaylistStore.accountKey("USER@EXAMPLE.COM")
+        assertEquals(key, SavedPlaylistStore.accountKey("user@example.com"))
+        assertEquals(64, key.length)
+    }
+
     @Test fun oldUnscopedSnapshotHasNoAccountIdentity() {
         val restored = SavedPlaylistCodec.decode("""{"version":1,"owned":[],"imported":[],"tracks":{}}""")
         assertEquals(null, restored.ownerKey)
