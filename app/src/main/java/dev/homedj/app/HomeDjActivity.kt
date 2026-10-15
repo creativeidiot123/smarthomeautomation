@@ -309,6 +309,11 @@ class HomeDjActivity : ComponentActivity() {
                             state = remoteState,
                             onConnect = remote::connect,
                             onCommand = remote::command,
+                            onBrowsePlaylists = remote::browsePlaylists,
+                            onBrowseDownloads = remote::browseDownloads,
+                            onBrowseTracks = remote::browseTracks,
+                            onLoadMore = remote::loadMore,
+                            onLibraryAction = remote::libraryAction,
                             onSwitch = { roleModel.select(HomeDjMode.SERVER) },
                         )
                     }
