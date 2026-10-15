@@ -4,6 +4,8 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.IOException
+import java.net.Socket
 import javax.crypto.AEADBadTagException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -12,6 +14,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveAudioCastTest {
+    @Test fun shutdownClosesCurrentSocketAndIsIdempotent() {
+        val lease = CastSocketLease()
+        val active = Socket()
+        lease.attach(active)
+        assertFalse(active.isClosed)
+
+        lease.close()
+        lease.close()
+        assertTrue(active.isClosed)
+    }
+
+    @Test fun shutdownBeforeSocketPublicationClosesAndRejectsLateSocket() {
+        val lease = CastSocketLease()
+        lease.close()
+        val late = Socket()
+        assertThrows(IOException::class.java) { lease.attach(late) }
+        assertTrue(late.isClosed)
+    }
+
     @Test fun onlyAlignedBoundedPcmPacketsAreAccepted() {
         assertTrue(LiveAudioFormat.validPacket(4))
         assertTrue(LiveAudioFormat.validPacket(LiveAudioFormat.CHUNK_BYTES))
