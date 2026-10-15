@@ -40,6 +40,7 @@ class RemoteServerService : Service() {
     private var server: ServerSocket? = null
     private var mediaFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
+    private val musicLibrary by lazy { RemoteLibraryCommands(applicationContext) }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -137,6 +138,10 @@ class RemoteServerService : Service() {
             val active = controller ?: return@withContext JSONObject()
                 .put("ok", false).put("error", "Playback service not ready")
             val action = request.optString("command")
+            if (action in setOf("catalog", "tracks", "downloads", "playTrack", "playPlaylist",
+                    "saveTrack", "savePlaylist")) {
+                return@withContext musicLibrary.handle(request, active)
+            }
             when (action) {
                 "status" -> Unit
                 "playPause" -> if (active.isPlaying) active.pause()
