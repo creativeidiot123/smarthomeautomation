@@ -1,5 +1,6 @@
 package dev.homedj.app
 
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +16,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -28,7 +29,8 @@ internal fun RemoteServerSection(running: Boolean, ip: String, code: String, onT
             Text(if (running) "Paired LAN access is running" else "Remote access is stopped")
             Text("Server IP: " + ip)
             Text("Port: 47188")
-            Text("Pairing code (keep private): " + code)
+            Text("Pairing code (keep private):")
+            SelectionContainer { Text(code) }
             Text("On OnePlus, enter this IP and code. Both phones must be on the same private Wi-Fi.")
             Button(onClick = { onToggle(!running) }) {
                 Text(if (running) "Stop remote access" else "Start remote access")
@@ -45,7 +47,7 @@ internal fun RemoteControllerScreen(
     onCommand: (String, Int?) -> Unit,
     onSwitch: () -> Unit,
 ) {
-    var host by rememberSaveable { mutableStateOf(state.host) }
+    var host by remember { mutableStateOf(state.host) }
     var code by rememberSaveable { mutableStateOf(state.pairingCode) }
     ScreenFrame {
         Text("Controller mode", style = MaterialTheme.typography.titleLarge)
