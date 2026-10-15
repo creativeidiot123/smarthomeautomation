@@ -99,6 +99,6 @@ internal object NativeAudioSource {
         }
         val chosen = candidates.maxByOrNull { it.averageBitrate }
             ?: throw IOException("No unprotected, directly downloadable audio stream available")
-        Link(chosen.content, chosen.format?.suffix ?: "m4a")
+        return Link(chosen.content, chosen.format?.suffix ?: "m4a")
     }
 }
