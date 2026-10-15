@@ -1,7 +1,6 @@
 package dev.homedj.app
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -41,13 +40,18 @@ internal class AutoLibraryConfig(context: Context) {
     fun isCurrent(accountName: String): Boolean =
         enabled && accountKey == SavedPlaylistStore.accountKey(accountName)
 
+    fun isDownloadCurrent(owner: String, playlistId: String): Boolean =
+        enabled && accountKey == owner && playlistId in playlistIds
+
     fun setEnabled(value: Boolean) {
         prefs.edit().putBoolean("enabled", value).apply()
         schedule()
     }
 
     fun togglePlaylist(id: String) {
-        if (!TermuxPlaylistDownloads.validId(id)) return
+        if (id.length !in 2..150 || id.any {
+                !it.isLetterOrDigit() && it != '_' && it != '-'
+            }) return
         val next = playlistIds.toMutableSet()
         if (!next.add(id)) next.remove(id)
         prefs.edit().putStringSet("playlists", next).apply()
@@ -79,7 +83,7 @@ internal class AutoLibraryConfig(context: Context) {
 
 /**
  * Google authorization is silent only; an interactive resolution is never launched by a Worker.
- * Download handoff is best-effort, not evidence that Termux downloaded anything successfully.
+ * Selected playlists enqueue native WorkManager audio downloads with stable media IDs.
  */
 class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
@@ -114,16 +118,23 @@ class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : Corout
             }
             if (!config.isCurrent(account)) return Result.success()
             Log.i("HomeDJAuto", "Playlist metadata refreshed: count=" + saved.playlists.size)
-            val selected = config.playlistIds.intersect(saved.playlists.map { it.id }.toSet()).take(20)
-            if (selected.isNotEmpty() && config.isCurrent(account) && 
-                app.checkSelfPermission(TermuxPlaylistDownloads.PERMISSION) == PackageManager.PERMISSION_GRANTED &&
-                TermuxPlaylistDownloads.isInstalled(app)) {
-                val accepted = TermuxPlaylistDownloads.startBatch(app, selected)
-                Log.i("HomeDJAuto", "Termux download handoff: accepted=" + accepted + " playlists=" + selected.size)
-                if (!accepted) return Result.retry()
-            } else if (selected.isNotEmpty()) {
-                Log.w("HomeDJAuto", "Automatic downloads blocked: Termux missing or permission not granted")
+            val selected = config.playlistIds.intersect(saved.playlists.map { it.id }.toSet()).take(10)
+            val queued = hashSetOf<String>()
+            for (playlistId in selected) {
+                if (!config.isCurrent(account) || playlistId !in config.playlistIds) break
+                val tracks = YouTubePlaylistRepository().tracks(token, playlistId)
+                SavedPlaylistStore.shared(app).storeTracks(account, playlistId, tracks)
+                for (track in tracks) {
+                    if (queued.size >= 150 || !config.isCurrent(account) ||
+                        playlistId !in config.playlistIds) break
+                    if (NativeAudioSource.validId(track.id) && queued.add(track.id)) {
+                        OfflineAudioLibrary.enqueue(app, track,
+                            SavedPlaylistStore.accountKey(account), playlistId)
+                    }
+                }
+                if (queued.size >= 150) break
             }
+            Log.i("HomeDJAuto", "Native offline downloads queued: " + queued.size)
             Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled

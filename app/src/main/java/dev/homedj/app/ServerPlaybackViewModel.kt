@@ -84,7 +84,6 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
             mutableStatus.value = mutableStatus.value.copy(error = "Media service not connected")
             return
         }
-        StreamResolution.cancel(getApplication())
         active.setMediaItems(
             selections.map { selected ->
                 MediaItem.Builder()
