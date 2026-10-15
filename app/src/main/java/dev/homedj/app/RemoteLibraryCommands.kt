@@ -19,7 +19,7 @@ internal class RemoteLibraryCommands(private val app: Context) {
         val id = request.optString("id")
         val offset = request.optInt("offset", -1)
         if (action in setOf("catalog", "tracks", "downloads")) {
-            if (offset !in 0..5_000) return error("Invalid page")
+            if (!validOffset(offset)) return error("Invalid page")
             return withContext(Dispatchers.IO) {
                 val saved = catalog.read()
                 when (action) {
@@ -56,7 +56,7 @@ internal class RemoteLibraryCommands(private val app: Context) {
                 if (!NativeAudioSource.validId(id)) return error("Invalid song")
                 val known = saved.tracks.values.asSequence().flatten().firstOrNull { it.id == id }
                 val local = OfflineAudioLibrary.existing(app, id)
-                if (known == null && local == null) return error("Song is not in the saved library")
+                if (!isTrackAllowed(saved, id, local != null)) return error("Song is not in the saved library")
                 listOf(known ?: YouTubeTrack(id, id))
             }
             else -> {
@@ -69,7 +69,9 @@ internal class RemoteLibraryCommands(private val app: Context) {
         }
         if (tracks.isEmpty()) return error("No cached songs. Open this playlist on Samsung to sync it.")
         if (action.startsWith("save")) {
-            tracks.forEach { OfflineAudioLibrary.enqueue(app, it) }
+            withContext(Dispatchers.IO) {
+                tracks.forEach { OfflineAudioLibrary.enqueue(app, it) }
+            }
             return JSONObject().put("ok", true)
                 .put("message", "Queued ${tracks.size} downloads on Samsung")
         }
@@ -90,6 +92,13 @@ internal class RemoteLibraryCommands(private val app: Context) {
         items.drop(offset).take(pageSize).forEach { array.put(make(it)) }
         return JSONObject().put("ok", true).put("items", array)
             .put("total", items.size).put("offset", offset)
+    }
+
+    internal companion object {
+        fun validOffset(value: Int): Boolean = value in 0..5_000
+        fun isTrackAllowed(saved: SavedPlaylistCatalog, id: String, fileExists: Boolean): Boolean =
+            NativeAudioSource.validId(id) && (fileExists ||
+                saved.tracks.values.any { songs -> songs.any { it.id == id } })
     }
 
     private fun error(reason: String): JSONObject =
