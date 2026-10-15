@@ -52,42 +52,49 @@ internal fun YouTubeSection(
             )
             if (!state.authorized) {
                 Button(onClick = onConnect) { Text("Connect YouTube account") }
+                if (state.playlists.isNotEmpty()) {
+                    Text(
+                        "Saved playlist snapshot (may be outdated). Connect to refresh metadata. " +
+                            "Songs still need a local audio file for playback.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onConnect) { Text("Sync playlists") }
-                    OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                    OutlinedButton(onClick = onDisconnect) { Text("Disconnect and erase saved playlists") }
                 }
                 Button(
                     onClick = { onImportPlaylist(playlistLink) },
                     enabled = !state.loadingPlaylists && playlistLink.isNotBlank(),
                 ) { Text("Browse playlist link") }
-                when {
-                    state.loadingPlaylists -> Text("Loading playlists…")
-                    state.playlists.isEmpty() -> Text("No playlists found for this YouTube channel.")
-                    else -> {
-                        for (playlist in state.playlists) {
-                            OutlinedButton(
-                                onClick = { onSelectPlaylist(playlist.id) },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(playlist.title + " (" + playlist.itemCount + ")")
-                            }
-                        }
+            }
+            if (state.loadingPlaylists) Text("Loading playlists…")
+            if (!state.loadingPlaylists && state.authorized && state.playlists.isEmpty()) {
+                Text("No playlists found for this YouTube channel.")
+            }
+            if (!state.loadingPlaylists) {
+                for (playlist in state.playlists) {
+                    OutlinedButton(
+                        onClick = { onSelectPlaylist(playlist.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(playlist.title + " (" + playlist.itemCount + ")")
                     }
                 }
-                if (state.loadingTracks) Text("Loading tracks…")
-                if (state.selectedPlaylistId != null && !state.loadingTracks) {
-                    Text(
-                        "Tracks (" + state.tracks.size + ")",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    if (state.tracks.isEmpty()) Text("No available videos in this playlist.")
-                    state.tracks.take(50).forEachIndexed { index, track ->
-                        Text((index + 1).toString() + ". " + track.title)
-                    }
-                    if (state.tracks.size > 50) {
-                        Text("Showing the first 50 tracks of " + state.tracks.size + ".")
-                    }
+            }
+            if (state.loadingTracks) Text("Loading tracks…")
+            if (state.selectedPlaylistId != null && !state.loadingTracks) {
+                Text(
+                    "Tracks (" + state.tracks.size + ")",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (state.tracks.isEmpty()) Text("No cached/available tracks in this playlist.")
+                state.tracks.take(50).forEachIndexed { index, track ->
+                    Text((index + 1).toString() + ". " + track.title)
+                }
+                if (state.tracks.size > 50) {
+                    Text("Showing the first 50 tracks of " + state.tracks.size + ".")
                 }
             }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
