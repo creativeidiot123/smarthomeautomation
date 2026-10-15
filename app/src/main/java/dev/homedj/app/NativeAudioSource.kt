@@ -73,7 +73,8 @@ internal object NativeAudioSource {
                                 }.orEmpty()
                             }
                             return Response(status, connection.responseMessage.orEmpty(),
-                                connection.headerFields.filterKeys { it != null }, body, connection.url.toString())
+                                connection.headerFields.filterKeys { it != null }
+                                    .mapKeys { it.key ?: "" }, body, connection.url.toString())
                         } finally {
                             connection.disconnect()
                         }

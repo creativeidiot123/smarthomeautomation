@@ -19,6 +19,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
@@ -30,6 +32,7 @@ internal object OfflineAudioLibrary {
     private const val MAX_TRACK_BYTES = 100L * 1024 * 1024
     private const val MAX_LIBRARY_BYTES = 2L * 1024 * 1024 * 1024
     private val extensions = listOf("m4a", "webm", "opus")
+    private val commitMutex = Mutex()
 
     fun directory(context: Context): File = File(context.applicationContext.filesDir, "offline_audio")
     fun existing(context: Context, videoId: String): File? {
@@ -91,6 +94,10 @@ internal object OfflineAudioLibrary {
                 if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     throw IOException("Audio HTTP status " + connection.responseCode)
                 }
+                val contentType = connection.contentType?.lowercase(java.util.Locale.ROOT).orEmpty()
+                if (!contentType.startsWith("audio/") && !contentType.startsWith("video/")) {
+                    throw IOException("Media server returned a non-audio response")
+                }
                 val declared = connection.contentLengthLong
                 if (declared > MAX_TRACK_BYTES || declared + existingSize > MAX_LIBRARY_BYTES && declared > 0) {
                     throw IOException("Insufficient offline storage budget")
@@ -118,7 +125,15 @@ internal object OfflineAudioLibrary {
                 }
                 coroutineContext.ensureActive()
                 if (!authorized()) throw IOException("Download no longer authorized")
-                if (!partial.renameTo(destination)) throw IOException("Unable to commit downloaded audio")
+                commitMutex.withLock {
+                    val committedBytes = folder.listFiles().orEmpty()
+                        .filter { it.isFile && it.extension in extensions }
+                        .sumOf { it.length().coerceAtLeast(0) }
+                    if (committedBytes + partial.length() > MAX_LIBRARY_BYTES) {
+                        throw IOException("Offline library size limit reached")
+                    }
+                    if (!partial.renameTo(destination)) throw IOException("Unable to commit downloaded audio")
+                }
                 destination
             } finally {
                 connection.disconnect()
