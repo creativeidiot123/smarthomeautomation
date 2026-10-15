@@ -10,7 +10,9 @@ on:
 
 jobs:
   android:
-    runs-on: [self-hosted, linux]
+    # The initial self-hosted Linux run remained queued without any job starting.
+    # Use an available hosted runner for the first reproducible APK validation.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

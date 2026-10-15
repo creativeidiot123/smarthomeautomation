@@ -14,7 +14,7 @@ Install JDK 17, Android SDK Platform 36, Gradle 8.13, and use the pinned project
 gradle --no-daemon --console=plain :app:testDebugUnitTest :app:assembleDebug
 ```
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`. The PR workflow runs on the Linux self-hosted runner and uploads the one debug APK for installation on *both* phones.
+APK: `app/build/outputs/apk/debug/app-debug.apk`. The PR workflow uses GitHub-hosted Ubuntu for the initial APK build because the Linux self-hosted build remained queued; it uploads one debug APK for installation on *both* phones.
 
 ## Samsung smoke test (not yet performed)
 
