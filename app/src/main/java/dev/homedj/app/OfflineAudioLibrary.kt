@@ -50,11 +50,15 @@ internal object OfflineAudioLibrary {
             .sortedBy { it.name }
             .map { LocalAudio(Uri.fromFile(it), it.nameWithoutExtension) }
 
-    fun enqueue(context: Context, track: YouTubeTrack, accountKey: String? = null) {
+    fun enqueue(
+        context: Context, track: YouTubeTrack, accountKey: String? = null,
+        playlistId: String? = null,
+    ) {
         require(NativeAudioSource.validId(track.id)) { "Invalid video ID" }
         val params = Data.Builder()
             .putString("videoId", track.id)
             .putString("accountKey", accountKey)
+            .putString("playlistId", playlistId)
             .build()
         val request = OneTimeWorkRequestBuilder<OfflineAudioWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -127,8 +131,10 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
     override suspend fun doWork(): Result {
         val id = inputData.getString("videoId") ?: return Result.failure()
         val account = inputData.getString("accountKey")
+        val playlist = inputData.getString("playlistId")
         val authorized = {
-            account == null || AutoLibraryConfig(applicationContext).isKeyCurrent(account)
+            account == null || playlist == null ||
+                AutoLibraryConfig(applicationContext).isDownloadCurrent(account, playlist)
         }
         if (!NativeAudioSource.validId(id) ||
             ModeStore(applicationContext).mode.first() != HomeDjMode.SERVER || !authorized()) {
