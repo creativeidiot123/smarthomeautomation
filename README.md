@@ -20,6 +20,15 @@ Audio downloads remain after disconnecting YouTube or changing accounts; auto-sy
 
 Enable **Start remote access** on the Samsung, note the private Wi-Fi address and pairing code, then enter them in **Controller** mode on OnePlus. Remote commands use AES-256-GCM with a server challenge, port 47188, and control the Samsung's sole Media3 session: status, pause/play, skip, shuffle and device volume. The controller does not host or download music. It now browses **Samsung's saved YouTube playlists**, paged track lists and native offline songs over the same encrypted channel. Tap a track to play it on Samsung, tap **Play playlist** to queue up to 500 cached tracks in Media3 with just-in-time online/offline audio resolution, or request a native download on Samsung. Saved playlist metadata must first have been synced on Samsung via Google OAuth; OnePlus never receives Google tokens, audio files or the signed media URL. The server sends only titles, IDs and download status. Playlists beyond 500 cached tracks require separate handling. Treat the pairing code as sensitive.
 
+## Cast OnePlus app audio to Samsung speakers
+
+1. Start HomeDJ in **Server** mode on Samsung, enable **Start remote access**, and pair your OnePlus in **Controller** mode over the same Wi-Fi.
+2. Tap **Start live audio casting** on OnePlus. Grant Android's **Record audio** permission and approve the system screen/audio capture prompt. On Android 14+ you may choose a single app or the whole screen.
+3. Play media in a compatible app on OnePlus. HomeDJ forwards 48 kHz stereo PCM over the **existing AES-256-GCM paired channel** on port 47188. Samsung renders it with AudioTrack and its connected speakers, while the normal Media3 queue is paused. The streamed audio is never saved.
+4. Tap **Stop live audio casting** or the persistent cast notification's **Stop casting** action. Sending a new Samsung playback command also ends its live stream. A Wi-Fi disconnect ends that session.
+
+This is playback capture, **not** unrestricted system-wide audio mirroring. Android only allows capturing media/game audio from apps that permit it. Many DRM/protected streaming apps, voice calls, microphone audio, apps from other profiles, or apps that block capture cannot be mirrored. OnePlus itself may still play its audio, so adjust the local volume/outputs to avoid hearing both devices. Raw PCM needs roughly 1.54 Mb/s plus encrypted transport overhead; local Wi-Fi and Samsung device latency determine smoothness and delay. The foreground notification and explicit Android projection consent are mandatory. No media server, transcoding service, cloud relay or additional pairing credential is required.
+
 ## Google OAuth setup
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), enable **YouTube Data API v3**, configure the consent screen for `https://www.googleapis.com/auth/youtube.readonly`, and add any required test users.
@@ -45,7 +54,7 @@ The PR workflow uploads `app/build/outputs/apk/debug/app-debug.apk` as **homedj-
 - In-app audio resolution for accessible video IDs, network failures and restricted videos; media focus, resume, speaker output and lock-screen playback.
 - Track save, interrupted transfer, offline-only playback, duplicate enqueue, free-space failure and 2-GiB limit; persistence across app restart.
 - Background download scheduling while idle or rebooted, account change/disconnect, unavailable Google authorization, battery saver and Samsung-specific restrictions.
-- Controller pairing/library browsing/streaming, Wi-Fi loss and lifecycle. Android does not guarantee that idle server services or WorkManager jobs run at exact times. Remote playlists without cached metadata need opening/syncing once on Samsung.
+- Controller pairing/library browsing/streaming, live audio capture authorization, Wi-Fi loss and lifecycle. Android does not guarantee that idle server services or WorkManager jobs run at exact times. Remote playlists without cached metadata need opening/syncing once on Samsung.
 
 ## Still not implemented
 
