@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -51,6 +52,7 @@ class RemoteServerService : Service() {
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val connections = Semaphore(6)
     private val castSocket = AtomicReference<Socket?>(null)
+    private var wifiLock: WifiManager.WifiLock? = null
 
     private fun stopCast() {
         castSocket.getAndSet(null)?.close()
@@ -83,6 +85,18 @@ class RemoteServerService : Service() {
             Log.e("HomeDJRemote", "Could not start remote foreground service", failure)
             stopSelf()
             return
+        }
+        // Wi-Fi power save drops or delays inbound packets while the screen is off, which shows
+        // up on OnePlus as connect timeouts. Android 14+ silently downgrades this to screen-on only.
+        try {
+            @Suppress("DEPRECATION")
+            val lock = getSystemService(WifiManager::class.java)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HomeDJ:remote")
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            wifiLock = lock
+        } catch (failure: RuntimeException) {
+            Log.w("HomeDJRemote", "Wi-Fi lock unavailable: " + failure.javaClass.simpleName)
         }
         val future = MediaController.Builder(
             this, SessionToken(this, ComponentName(this, PlaybackService::class.java))
@@ -227,6 +241,8 @@ class RemoteServerService : Service() {
         mediaFuture?.let(MediaController::releaseFuture)
         mediaFuture = null
         controller = null
+        wifiLock?.release()
+        wifiLock = null
         super.onDestroy()
     }
 

@@ -12,7 +12,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 data class RemotePlaylist(val id: String, val title: String, val count: Int)
@@ -59,15 +60,12 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     private var browseVersion = 0
     private var started = false
     private var networkRegistered = false
+    // Wakes the poll loop early (Wi-Fi back, a failed command) without restarting it.
+    private val refresh = Channel<Unit>(Channel.CONFLATED)
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
     private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            viewModelScope.launch {
-                if (started && connection?.isActive == true) {
-                    val current = mutableState.value
-                    connect(current.host, current.pairingCode)
-                }
-            }
+            refresh.trySend(Unit)
         }
     }
 
@@ -109,6 +107,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         connection = viewModelScope.launch {
             var failures = 0
             while (isActive && version == generation) {
+                refresh.tryReceive() // This poll answers any refresh requested before it.
                 try {
                     val response = exchange(address, key, "status")
                     if (!response.optBoolean("ok")) throw IllegalStateException("Rejected")
@@ -119,8 +118,8 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                         prefs.saveClient(address, code)
                     }
                     show(response)
-                    if (firstConnection) {
-                        val currentBrowse = mutableState.value
+                    val currentBrowse = mutableState.value
+                    if (firstConnection && currentBrowse.needsBrowse()) {
                         browse(currentBrowse.browserMode, currentBrowse.selectedPlaylistId)
                     }
                 } catch (failure: CancellationException) {
@@ -130,13 +129,15 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                     failures++
                     Log.w("HomeDJRemote", "Remote status failed: " +
                         failure.javaClass.simpleName + " consecutive=" + failures.coerceAtMost(6))
-                    browseVersion++
-                    mutableState.value = mutableState.value.copy(
-                        connected = false, browserLoading = false,
-                        error = "Server unavailable or pairing code incorrect."
-                    )
+                    if (showsDisconnected(failures, mutableState.value.connected)) {
+                        browseVersion++
+                        mutableState.value = mutableState.value.copy(
+                            connected = false, browserLoading = false,
+                            error = "Server unavailable or pairing code incorrect."
+                        )
+                    }
                 }
-                delay(statusRetryDelayMillis(failures))
+                withTimeoutOrNull(statusRetryDelayMillis(failures)) { refresh.receive() }
             }
         }
     }
@@ -161,9 +162,9 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             } catch (failure: Exception) {
                 if (version != generation) return@launch
                 Log.w("HomeDJRemote", "Remote command failed: " + failure.javaClass.simpleName)
-                mutableState.value = mutableState.value.copy(
-                    connected = false, error = "Command failed. Check Wi-Fi connection."
-                )
+                // Unknown outcome: re-read Samsung's status now; the poll decides if the link is down.
+                mutableState.value = mutableState.value.copy(error = "Command failed. Check Wi-Fi connection.")
+                refresh.trySend(Unit)
             }
         }
     }
@@ -235,6 +236,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                 mutableState.value = mutableState.value.copy(
                     browserLoading = false, error = "Could not browse Samsung library."
                 )
+                refresh.trySend(Unit)
             }
         }
     }
@@ -262,6 +264,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                 mutableState.value = mutableState.value.copy(
                     error = "Server did not confirm the command. Check connection."
                 )
+                refresh.trySend(Unit)
             }
         }
     }
@@ -311,6 +314,14 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         super.onCleared()
     }
 }
+
+/** One missed poll on a live link is a Wi-Fi blip, not an outage; a link never confirmed fails fast. */
+internal fun showsDisconnected(consecutiveFailures: Int, connected: Boolean): Boolean =
+    !connected || consecutiveFailures >= 2
+
+/** Reconnecting keeps what is already loaded; only an empty or interrupted section is fetched again. */
+internal fun RemoteUiState.needsBrowse(): Boolean =
+    if (browserMode == "catalog") playlists.isEmpty() else songs.isEmpty()
 
 /** Fast initial recovery, capped retries while offline, slower healthy polling. */
 internal fun statusRetryDelayMillis(consecutiveFailures: Int): Long = when {

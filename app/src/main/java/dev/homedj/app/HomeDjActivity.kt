@@ -20,6 +20,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -317,9 +318,11 @@ class HomeDjActivity : ComponentActivity() {
                         )
                     }
                     role.mode == HomeDjMode.CONTROLLER -> {
-                        DisposableEffect(remote) {
+                        // Poll Samsung only while visible; returning to the app re-polls at once
+                        // instead of waiting out a backoff that grew while the app was in the background.
+                        LifecycleStartEffect(remote) {
                             remote.start()
-                            onDispose { if (!isChangingConfigurations) remote.stop() }
+                            onStopOrDispose { remote.stop() }
                         }
                         val remoteState by remote.state.collectAsStateWithLifecycle()
                         val castState by LiveAudioCastService.state.collectAsStateWithLifecycle()
