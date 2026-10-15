@@ -43,6 +43,9 @@ internal fun RemoteServerSection(running: Boolean, ip: String, code: String, onT
 internal fun RemoteControllerScreen(
     changing: Boolean,
     state: RemoteUiState,
+    castState: CastState,
+    onStartCast: () -> Unit,
+    onStopCast: () -> Unit,
     onConnect: (String, String) -> Unit,
     onCommand: (String, Int?) -> Unit,
     onBrowsePlaylists: () -> Unit,
@@ -81,13 +84,37 @@ internal fun RemoteControllerScreen(
             }
         }
         ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Cast OnePlus app audio", style = MaterialTheme.typography.titleLarge)
+                Text("Stream compatible music, videos and game audio over encrypted Wi-Fi to Samsung's speakers.")
+                Text("Some apps block capture. Calls, private audio and protected media cannot be cast.",
+                    style = MaterialTheme.typography.bodySmall)
+                Button(
+                    onClick = if (castState.active || castState.connecting) onStopCast else onStartCast,
+                    enabled = state.connected || castState.active || castState.connecting,
+                ) {
+                    Text(when {
+                        castState.active -> "Stop live audio casting"
+                        castState.connecting -> "Cancel audio casting"
+                        else -> "Start live audio casting"
+                    })
+                }
+                Text(when {
+                    castState.active -> "Streaming OnePlus audio to Samsung"
+                    castState.connecting -> "Connecting live audio…"
+                    else -> "Not casting"
+                })
+                castState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Playing on Samsung", style = MaterialTheme.typography.labelLarge)
                 Text(state.title, style = MaterialTheme.typography.titleLarge)
                 Text("Queue: " + state.queueSize + " tracks")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
-                        onClick = { onCommand("previous", null) }, enabled = state.connected && state.hasTrack,
+                        onClick = { onCommand("previous", null) }, enabled = state.connected && state.hasTrack && !state.casting,
                     ) { Text("Previous") }
                     Button(
                         onClick = { onCommand("playPause", null) }, enabled = state.connected && state.hasTrack,
@@ -97,7 +124,7 @@ internal fun RemoteControllerScreen(
                     ) { Text("Next") }
                 }
                 OutlinedButton(
-                    onClick = { onCommand("shuffle", null) }, enabled = state.connected && state.queueSize > 1,
+                    onClick = { onCommand("shuffle", null) }, enabled = state.connected && state.queueSize > 1 && !state.casting,
                 ) { Text(if (state.shuffle) "Shuffle: on" else "Shuffle: off") }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(

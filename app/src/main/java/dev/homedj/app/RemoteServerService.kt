@@ -17,7 +17,11 @@ import androidx.media3.session.SessionToken
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.SocketException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +45,13 @@ class RemoteServerService : Service() {
     private var mediaFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private val musicLibrary by lazy { RemoteLibraryCommands(applicationContext) }
+    private val clients = ConcurrentHashMap.newKeySet<Socket>()
+    private val connections = Semaphore(6)
+    private val castSocket = AtomicReference<Socket?>(null)
+
+    private fun stopCast() {
+        castSocket.getAndSet(null)?.close()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -96,20 +107,32 @@ class RemoteServerService : Service() {
             val key = requireNotNull(RemoteChannel.decodeKey(RemotePrefs(this).serverKey()))
             while (true) {
                 val client = withContext(Dispatchers.IO) { listener.accept() }
-                try {
-                    client.use { socket ->
-                        socket.soTimeout = 5_000
-                        RemoteChannel.serve(
-                            DataInputStream(socket.getInputStream()),
-                            DataOutputStream(socket.getOutputStream()),
-                            key,
-                        ) { request ->
-                            handle(request)
+                if (!connections.tryAcquire()) {
+                    client.close()
+                    continue
+                }
+                clients.add(client)
+                scope.launch {
+                    try {
+                        client.use { socket ->
+                            socket.soTimeout = 5_000
+                            socket.tcpNoDelay = true
+                            RemoteChannel.serve(
+                                DataInputStream(socket.getInputStream()),
+                                DataOutputStream(socket.getOutputStream()),
+                                key,
+                                action = { request -> handle(request, socket) },
+                                onPcm = { next -> LiveAudioSink.play(this@RemoteServerService, next) },
+                            )
                         }
+                    } catch (failure: Exception) {
+                        if (failure is CancellationException) throw failure
+                        Log.w("HomeDJRemote", "LAN session ended: " + failure.javaClass.simpleName)
+                    } finally {
+                        castSocket.compareAndSet(client, null)
+                        clients.remove(client)
+                        connections.release()
                     }
-                } catch (failure: Exception) {
-                    if (failure is CancellationException) throw failure
-                    Log.w("HomeDJRemote", "Rejected LAN request: " + failure.javaClass.simpleName)
                 }
             }
         } catch (failure: SocketException) {
@@ -128,7 +151,7 @@ class RemoteServerService : Service() {
         }
     }
 
-    private suspend fun handle(request: JSONObject): JSONObject =
+    private suspend fun handle(request: JSONObject, socket: Socket): JSONObject =
         withContext(Dispatchers.Main.immediate) {
             if (!RemotePrefs(this@RemoteServerService).enabled ||
                 ModeStore(this@RemoteServerService).mode.first() != HomeDjMode.SERVER
@@ -138,6 +161,20 @@ class RemoteServerService : Service() {
             val active = controller ?: return@withContext JSONObject()
                 .put("ok", false).put("error", "Playback service not ready")
             val action = request.optString("command")
+            if (action == "audioStart") {
+                if (!castSocket.compareAndSet(null, socket)) {
+                    return@withContext JSONObject().put("ok", false).put("error", "Another cast is running")
+                }
+                active.pause()
+                return@withContext JSONObject().put("ok", true)
+            }
+            if (action == "stopCast") {
+                stopCast()
+                return@withContext JSONObject().put("ok", true)
+            }
+            if (action in setOf("playTrack", "playPlaylist", "playPause", "next", "previous")) {
+                stopCast()
+            }
             if (action in setOf("catalog", "tracks", "downloads", "playTrack", "playPlaylist",
                     "saveTrack", "savePlaylist")) {
                 return@withContext musicLibrary.handle(request, active)
@@ -165,7 +202,9 @@ class RemoteServerService : Service() {
             val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             JSONObject()
                 .put("ok", true)
-                .put("title", active.currentMediaItem?.mediaMetadata?.title?.toString() ?: "No track selected")
+                .put("title", if (castSocket.get() != null) "OnePlus live audio"
+                    else active.currentMediaItem?.mediaMetadata?.title?.toString() ?: "No track selected")
+                .put("casting", castSocket.get() != null)
                 .put("playing", active.isPlaying)
                 .put("hasTrack", active.currentMediaItem != null)
                 .put("queueSize", active.mediaItemCount)
@@ -176,6 +215,8 @@ class RemoteServerService : Service() {
     override fun onDestroy() {
         running.value = false
         server?.close()
+        stopCast()
+        clients.forEach { it.close() }
         scope.cancel()
         mediaFuture?.let(MediaController::releaseFuture)
         mediaFuture = null

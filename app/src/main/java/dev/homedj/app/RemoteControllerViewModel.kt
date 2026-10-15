@@ -31,6 +31,7 @@ data class RemoteUiState(
     val queueSize: Int = 0,
     val shuffle: Boolean = false,
     val volume: Int = 0,
+    val casting: Boolean = false,
     val error: String? = null,
     val notice: String? = null,
     val browserMode: String = "catalog",
@@ -246,6 +247,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             queueSize = response.optInt("queueSize"),
             shuffle = response.optBoolean("shuffle"),
             volume = response.optInt("volume"),
+            casting = response.optBoolean("casting"),
             error = if (mutableState.value.connected) mutableState.value.error else null,
         )
     }
