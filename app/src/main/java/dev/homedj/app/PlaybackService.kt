@@ -31,9 +31,8 @@ class PlaybackService : MediaLibraryService() {
     @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     override fun onCreate() {
         super.onCreate()
-        val dataSource = ResolvingDataSource.Factory(
-            DefaultDataSource.Factory(this), HomeDjMediaResolver(this)
-        )
+        val resolver = HomeDjMediaResolver(this)
+        val dataSource = ResolvingDataSource.Factory(DefaultDataSource.Factory(this), resolver)
         val localPlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             .setAudioAttributes(
@@ -46,6 +45,7 @@ class PlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
         player = localPlayer
+        localPlayer.addListener(PlaybackRecovery(localPlayer, resolver, roleScope))
         librarySession = MediaLibrarySession.Builder(
             this,
             localPlayer,

@@ -13,8 +13,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.io.File
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -63,8 +61,19 @@ internal object OfflineAudioLibrary {
     internal fun workName(id: String, automatic: Boolean): String =
         (if (automatic) "homedj_auto_audio_" else "homedj_audio_") + id
 
-    internal fun partialFile(context: Context, id: String, automatic: Boolean): File =
-        File(directory(context), if (automatic) "$id.auto.part" else "$id.part")
+    /** Keyed by stream itag: a resumed attempt only appends to bytes of the same stream format. */
+    internal fun partialFile(context: Context, id: String, automatic: Boolean, itag: Int): File =
+        File(directory(context), if (automatic) "$id.$itag.auto.part" else "$id.$itag.part")
+
+    internal fun isPartialOf(name: String, id: String, automatic: Boolean): Boolean =
+        Regex(Regex.escape(id) + (if (automatic) """\.\d+\.auto\.part""" else """\.\d+\.part"""))
+            .matches(name)
+
+    fun discardPartials(context: Context, id: String, automatic: Boolean) {
+        directory(context).listFiles().orEmpty()
+            .filter { isPartialOf(it.name, id, automatic) }
+            .forEach { it.delete() }
+    }
 
     fun enqueue(
         context: Context, track: YouTubeTrack, accountKey: String? = null,
@@ -94,74 +103,43 @@ internal object OfflineAudioLibrary {
         withContext(Dispatchers.IO) {
             require(NativeAudioSource.validId(id))
             existing(context, id)?.let { return@withContext it }
-            if (!authorized()) throw IOException("Download no longer authorized")
+            if (!authorized()) throw DownloadRejected("Download no longer authorized")
             val link = NativeAudioSource.resolve(id)
             val folder = directory(context)
             if (!folder.exists() && !folder.mkdirs()) throw IOException("Cannot create audio directory")
             val destination = File(folder, "$id.${link.extension}")
-            val partial = partialFile(context, id, automatic)
-            val existingSize = folder.listFiles().orEmpty().filter { it.isFile && it.extension != "part" }
+            val partial = partialFile(context, id, automatic, link.itag)
+            // A partial for another stream format cannot be resumed with this link.
+            folder.listFiles().orEmpty()
+                .filter { isPartialOf(it.name, id, automatic) && it != partial }
+                .forEach { it.delete() }
+            val otherBytes = folder.listFiles().orEmpty().filter { it.isFile && it != partial }
                 .sumOf { it.length().coerceAtLeast(0) }
-            if (existingSize >= MAX_LIBRARY_BYTES) throw IOException("Offline library storage limit reached")
-            val connection = URL(link.url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 12_000
-            connection.readTimeout = 20_000
-            connection.setRequestProperty("Accept", "audio/*")
-            connection.instanceFollowRedirects = false
+            if (otherBytes >= MAX_LIBRARY_BYTES) throw DownloadRejected("Offline library storage limit reached")
             try {
-                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                    throw IOException("Audio HTTP status " + connection.responseCode)
-                }
-                val contentType = connection.contentType?.lowercase(java.util.Locale.ROOT).orEmpty()
-                if (!contentType.startsWith("audio/") && !contentType.startsWith("video/")) {
-                    throw IOException("Media server returned a non-audio response")
-                }
-                val declared = connection.contentLengthLong
-                if (declared > MAX_TRACK_BYTES || declared + existingSize > MAX_LIBRARY_BYTES && declared > 0) {
-                    throw IOException("Insufficient offline storage budget")
-                }
-                partial.outputStream().buffered().use { output ->
-                    connection.inputStream.use { input ->
-                        val buffer = ByteArray(32 * 1024)
-                        var countTotal = 0L
-                        var bytesSinceRoleCheck = 0L
-                        while (true) {
-                            coroutineContext.ensureActive()
-                            val size = input.read(buffer)
-                            if (size < 0) break
-                            countTotal += size
-                            bytesSinceRoleCheck += size
-                            if (bytesSinceRoleCheck >= 1024 * 1024) {
-                                if (!authorized()) throw IOException("Download stopped: server mode or consent changed")
-                                bytesSinceRoleCheck = 0
-                            }
-                            if (countTotal > MAX_TRACK_BYTES || countTotal + existingSize > MAX_LIBRARY_BYTES) {
-                                throw IOException("Audio exceeds offline storage budget")
-                            }
-                            if (folder.usableSpace < 10L * 1024 * 1024) throw IOException("Device storage nearly full")
-                            output.write(buffer, 0, size)
-                        }
-                        if (countTotal == 0L || declared > 0 && countTotal != declared) {
-                            throw IOException("Audio transfer incomplete")
-                        }
+                AudioTransfer.fetch(link.url, partial) { total ->
+                    if (!authorized()) throw DownloadRejected("Download stopped: server mode or consent changed")
+                    if (folder.usableSpace < 10L * 1024 * 1024) throw DownloadRejected("Device storage nearly full")
+                    if (total > MAX_TRACK_BYTES || total + otherBytes > MAX_LIBRARY_BYTES) {
+                        throw DownloadRejected("Audio exceeds offline storage budget")
                     }
                 }
                 coroutineContext.ensureActive()
-                if (!authorized()) throw IOException("Download no longer authorized")
                 commitMutex.withLock {
-                    if (!authorized()) throw IOException("Download no longer authorized")
+                    if (!authorized()) throw DownloadRejected("Download no longer authorized")
                     val committedBytes = folder.listFiles().orEmpty()
                         .filter { it.isFile && it.extension in extensions }
                         .sumOf { it.length().coerceAtLeast(0) }
                     if (committedBytes + partial.length() > MAX_LIBRARY_BYTES) {
-                        throw IOException("Offline library size limit reached")
+                        throw DownloadRejected("Offline library size limit reached")
                     }
-                    if (!partial.renameTo(destination)) throw IOException("Unable to commit downloaded audio")
+                    if (!partial.renameTo(destination)) throw DownloadRejected("Unable to commit downloaded audio")
                 }
                 destination
-            } finally {
-                connection.disconnect()
-                if (partial.exists()) partial.delete()
+            } catch (rejected: DownloadRejected) {
+                // Any other failure keeps the partial so the next worker attempt resumes it.
+                partial.delete()
+                throw rejected
             }
         }
 }
@@ -179,9 +157,10 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
                 (!automatic || config.isDownloadCurrent(account.orEmpty(), playlist.orEmpty()))
         }
         if (!NativeAudioSource.validId(id)) return Result.success()
-        // A killed earlier attempt of this unique job may have left a partial file behind.
-        OfflineAudioLibrary.partialFile(applicationContext, id, automatic).delete()
-        if (!authorized()) return Result.success()
+        if (!authorized()) {
+            OfflineAudioLibrary.discardPartials(applicationContext, id, automatic)
+            return Result.success()
+        }
         return try {
             val file = OfflineAudioLibrary.download(applicationContext, id, automatic, authorized)
             Log.i("HomeDJOffline", "Download ready: videoId=" + id + " bytes=" + file.length())
@@ -191,7 +170,13 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
         } catch (failure: Exception) {
             Log.w("HomeDJOffline", "Audio download failed: videoId=" + id +
                 " error=" + failure.javaClass.simpleName)
-            if (runAttemptCount < 2 && authorized()) Result.retry() else Result.failure()
+            // NewPipe's downloader retries 3 times; a resumed attempt continues the kept partial file.
+            if (failure !is TrackUnavailableException && runAttemptCount < 3 && authorized()) {
+                Result.retry()
+            } else {
+                OfflineAudioLibrary.discardPartials(applicationContext, id, automatic)
+                Result.failure()
+            }
         }
     }
 }

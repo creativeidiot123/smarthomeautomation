@@ -46,12 +46,10 @@ internal object LiveAudioSink {
             while (true) {
                 val pcm = receive()
                 if (!LiveAudioFormat.validPacket(pcm.size)) throw IOException("Invalid audio packet")
-                var position = 0
-                while (position < pcm.size) {
-                    val written = output.write(pcm, position, pcm.size - position, AudioTrack.WRITE_BLOCKING)
-                    if (written <= 0) throw IOException("Samsung audio output stopped")
-                    position += written
-                }
+                // Like scrcpy's audio player, drop what a full buffer cannot take: a Wi-Fi burst after
+                // a stall must not leave the speakers permanently seconds behind the OnePlus.
+                val written = output.write(pcm, 0, pcm.size, AudioTrack.WRITE_NON_BLOCKING)
+                if (written < 0) throw IOException("Samsung audio output stopped")
                 primed += pcm.size
                 if (!started && primed >= LiveAudioFormat.CHUNK_BYTES * 5) {
                     output.play()

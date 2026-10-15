@@ -5,6 +5,7 @@ import java.io.DataOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.Base64
 import javax.crypto.Cipher
@@ -55,7 +56,8 @@ internal object RemoteChannel {
         val reply = action(request)
         send(output, key, challenge, reply)
         if (request.optString("command") == "audioStart" && reply.optBoolean("ok")) {
-            onPcm { receiveAudio(input, key, challenge) }
+            var sequence = 0L
+            onPcm { receiveAudio(input, key, challenge, sequence++) }
         }
     }
 
@@ -73,19 +75,28 @@ internal object RemoteChannel {
             if (!receive(input, key, challenge).optBoolean("ok")) {
                 throw IOException("Samsung rejected audio casting")
             }
+            var sequence = 0L
             while (!socket.isClosed) {
-                sendAudio(output, key, challenge, next() ?: break)
+                sendAudio(output, key, challenge, sequence++, next() ?: break)
             }
         }
     }
 
-    internal fun sendAudio(output: DataOutputStream, key: SecretKeySpec, challenge: ByteArray, pcm: ByteArray) {
+    /** Each PCM frame authenticates its position, so a LAN peer cannot replay, drop or reorder frames. */
+    internal fun audioAad(challenge: ByteArray, sequence: Long): ByteArray =
+        ByteBuffer.allocate(challenge.size + Long.SIZE_BYTES).put(challenge).putLong(sequence).array()
+
+    internal fun sendAudio(
+        output: DataOutputStream, key: SecretKeySpec, challenge: ByteArray, sequence: Long, pcm: ByteArray,
+    ) {
         require(LiveAudioFormat.validPacket(pcm.size)) { "Invalid audio frame" }
-        sendBytes(output, key, challenge, pcm)
+        sendBytes(output, key, audioAad(challenge, sequence), pcm)
     }
 
-    internal fun receiveAudio(input: DataInputStream, key: SecretKeySpec, challenge: ByteArray): ByteArray {
-        val data = receiveBytes(input, key, challenge)
+    internal fun receiveAudio(
+        input: DataInputStream, key: SecretKeySpec, challenge: ByteArray, sequence: Long,
+    ): ByteArray {
+        val data = receiveBytes(input, key, audioAad(challenge, sequence))
         if (!LiveAudioFormat.validPacket(data.size)) throw IOException("Invalid PCM packet")
         return data
     }

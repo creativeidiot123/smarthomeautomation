@@ -14,4 +14,13 @@ class HomeDjMediaResolverTest {
         assertNull(HomeDjMediaResolver.videoIdFromUri("https://youtube.com/watch?v=$id"))
         assertNull(HomeDjMediaResolver.videoIdFromUri("homedj://attacker/$id"))
     }
+
+    @Test fun numbersPlaybackRequestsLikeNewPipe() {
+        assertEquals("https://h.googlevideo.com/videoplayback?id=1&rn=7",
+            HomeDjMediaResolver.withRequestNumber("https://h.googlevideo.com/videoplayback?id=1", 7))
+        val numbered = "https://h.googlevideo.com/videoplayback?id=1&rn=2"
+        assertEquals(numbered, HomeDjMediaResolver.withRequestNumber(numbered, 9))
+        assertEquals("https://h.googlevideo.com/other?id=1",
+            HomeDjMediaResolver.withRequestNumber("https://h.googlevideo.com/other?id=1", 3))
+    }
 }
