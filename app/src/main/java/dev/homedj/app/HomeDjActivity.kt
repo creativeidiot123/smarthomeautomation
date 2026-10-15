@@ -103,7 +103,7 @@ class HomeDjActivity : ComponentActivity() {
             if (it.moveToFirst()) it.getString(0) else null
         } ?: "Selected audio"
 
-    private fun requestYouTubeAccess() {
+    private fun requestYouTubeAccess(interactive: Boolean = true) {
         if (authorizationPending || revokePending || roleModel.state.value.mode != HomeDjMode.SERVER) return
         authorizationPending = true
         val request = AuthorizationRequest.builder().setRequestedScopes(scopes).build()
@@ -112,6 +112,10 @@ class HomeDjActivity : ComponentActivity() {
                 if (roleModel.state.value.mode != HomeDjMode.SERVER) {
                     authorizationPending = false
                 } else if (result.hasResolution()) {
+                    if (!interactive) {
+                        authorizationPending = false
+                        return@addOnSuccessListener
+                    }
                     val pending = result.pendingIntent
                     if (pending == null) {
                         authorizationPending = false
@@ -133,7 +137,9 @@ class HomeDjActivity : ComponentActivity() {
             .addOnFailureListener(this) { failure ->
                 authorizationPending = false
                 Log.w("HomeDJ", "Google authorization failed: " + failure.javaClass.simpleName)
-                youtube.authorizationError("YouTube authorization failed. Check Google Play services.")
+                if (interactive) {
+                    youtube.authorizationError("YouTube authorization failed. Check Google Play services.")
+                }
             }
     }
 
@@ -199,7 +205,7 @@ class HomeDjActivity : ComponentActivity() {
         if (revokePending || authorizationPending) return
         val account = youtube.authorizedAccount
         if (account == null) {
-            youtube.clear()
+            youtube.disconnectAndEraseCatalog()
             youtube.authorizationError(
                 "Playlist view cleared. Revoke the app's access from Google Account settings."
             )
@@ -210,7 +216,7 @@ class HomeDjActivity : ComponentActivity() {
         Identity.getAuthorizationClient(this).revokeAccess(request)
             .addOnSuccessListener(this) {
                 revokePending = false
-                youtube.clear()
+                youtube.disconnectAndEraseCatalog()
             }
             .addOnFailureListener(this) { failure ->
                 revokePending = false
@@ -229,6 +235,8 @@ class HomeDjActivity : ComponentActivity() {
                     role.mode == HomeDjMode.SERVER -> {
                         DisposableEffect(playback, youtube) {
                             playback.connect()
+                            youtube.showSavedCatalog()
+                            requestYouTubeAccess(interactive = false)
                             if (RemotePrefs(this@HomeDjActivity).enabled) setRemoteEnabled(true)
                             onDispose {
                                 playback.disconnect()
@@ -251,7 +259,7 @@ class HomeDjActivity : ComponentActivity() {
                             onNext = playback::next,
                             onPrevious = playback::previous,
                             onShuffle = playback::toggleShuffle,
-                            onConnectYouTube = ::requestYouTubeAccess,
+                            onConnectYouTube = { requestYouTubeAccess(interactive = true) },
                             onDisconnectYouTube = ::disconnectYouTube,
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
