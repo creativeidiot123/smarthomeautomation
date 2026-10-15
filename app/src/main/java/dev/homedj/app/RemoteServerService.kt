@@ -28,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -104,8 +105,7 @@ class RemoteServerService : Service() {
                             DataOutputStream(socket.getOutputStream()),
                             key,
                         ) { request ->
-                            // RemoteChannel.serve is on IO; commands must execute on Media3's main thread.
-                            kotlinx.coroutines.runBlocking(Dispatchers.Main) { handle(request) }
+                            handle(request)
                         }
                 } catch (failure: Exception) {
                     if (failure is CancellationException) throw failure
@@ -131,7 +131,7 @@ class RemoteServerService : Service() {
     private suspend fun handle(request: JSONObject): JSONObject =
         withContext(Dispatchers.Main.immediate) {
             if (!RemotePrefs(this@RemoteServerService).enabled ||
-                ModeStore(this@RemoteServerService).mode.firstMode() != HomeDjMode.SERVER
+                ModeStore(this@RemoteServerService).mode.first() != HomeDjMode.SERVER
             ) {
                 return@withContext JSONObject().put("ok", false).put("error", "Server role inactive")
             }
@@ -190,5 +190,3 @@ class RemoteServerService : Service() {
     }
 }
 
-private suspend fun kotlinx.coroutines.flow.Flow<HomeDjMode?>.firstMode(): HomeDjMode? =
-    kotlinx.coroutines.flow.first()
