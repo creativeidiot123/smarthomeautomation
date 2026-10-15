@@ -108,8 +108,10 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             try {
                 val response = exchange(current.host, key, action, percent = percent)
                 if (version != generation) return@launch
-                if (response.optBoolean("ok")) show(response)
-                else mutableState.value = mutableState.value.copy(
+                if (response.optBoolean("ok")) {
+                    show(response)
+                    mutableState.value = mutableState.value.copy(error = null)
+                } else mutableState.value = mutableState.value.copy(
                     error = response.optString("error", "Remote command rejected")
                 )
             } catch (failure: CancellationException) {
@@ -244,7 +246,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             queueSize = response.optInt("queueSize"),
             shuffle = response.optBoolean("shuffle"),
             volume = response.optInt("volume"),
-            error = null,
+            error = if (mutableState.value.connected) mutableState.value.error else null,
         )
     }
 
