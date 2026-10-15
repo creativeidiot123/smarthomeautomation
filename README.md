@@ -10,9 +10,23 @@ Install the same APK on both devices. Choose **Server** on the Samsung Galaxy M2
 - Choose **multiple local audio documents** through Android's document picker. HomeDJ obtains persistable read grants, queues the selected files and offers play, pause, previous, next and shuffle. The active queue is not restored after service process death.
 - Server mode offers **read-only YouTube authorization** with Google Play services, lists *playlists owned by the authorized YouTube channel* and lists their video titles. Refresh requires the user's action. The YouTube view and token remain in process memory only; reopening after process death requires reconnecting. Disconnect requests Google revocation when the account is available.
 - You can **paste a YouTube or YouTube Music playlist link** (including a public or accessible unlisted playlist) to browse its tracks even when it isn't owned by your channel. Imported playlist links are in-memory only and disappear on account reconnection/refresh or process restart. Private playlists require access from the signed-in account.
+- Server mode can hand a pasted YouTube / YouTube Music playlist URL to **Termux yt-dlp** for an explicit, user-initiated local audio download. HomeDJ does not manage or verify downloads; once Termux completes, manually choose the files with the local audio picker. This optional path works without Google OAuth for playlists that yt-dlp can access. Private/account-restricted content is not automatically authenticated.
 - Controller mode remains explicitly **unpaired**; no remote commands or connection have shipped.
 
 The playlist-link import is an independent, official YouTube Data API implementation inspired by [Metrolist](https://github.com/MetrolistGroup/Metrolist), whose GPL-3.0 source is **not copied** into HomeDJ. Metrolist's full YouTube Music streaming/offline architecture uses an unofficial InnerTube client, authenticated sessions, and download/cache infrastructure. Those components are not part of this PR.
+
+The optional Termux workflow downloads files independently of HomeDJ's YouTube Data API integration. Google authorization tokens are **never passed to Termux**. Downloading YouTube content may violate YouTube's terms and may require permission from the rights holder. Use this only where you have the necessary rights; private-use intent does not override platform terms.
+
+## Optional Termux offline audio on Samsung
+
+1. Install a current [Termux](https://github.com/termux/termux-app) build on the Samsung (F-Droid or the Termux project's own APK), then open Termux.
+2. Run `pkg update && pkg install python ffmpeg`, followed by `python -m pip install -U yt-dlp` using a supported Termux Python environment. Confirm `yt-dlp --version` succeeds.
+3. Run `termux-setup-storage`, grant Termux shared-storage access and enable `allow-external-apps = true` in `~/.termux/termux.properties`. Restart Termux after changing the property.
+4. Grant **HomeDJ** Android's **Run commands in Termux environment** permission under app settings (Additional permissions) when prompted. Termux must be installed for the permission to be available.
+5. In HomeDJ Server mode paste a YouTube Music playlist link and tap **Download playlist in Termux**. Termux opens a terminal to run yt-dlp and write MP3 files into `Music/HomeDJ/<playlist name>/`. This means only that a command was sent, **not** that the download succeeded. Watch Termux for errors.
+6. After completion, choose the audio through **Choose local audio files** in HomeDJ. Automatic import, progress tracking, download resumption, scheduling and remote commands are not yet implemented.
+
+Termux may need battery optimization exceptions on Samsung devices for longer jobs. This version intentionally uses the documented Termux RUN_COMMAND intent and fixed argv, never a shell command assembled from untrusted input. See [Termux RUN_COMMAND integration instructions](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent).
 
 YouTube playlists are **metadata only**. A YouTube video cannot be fed to the local audio player or automatically downloaded by this integration. YouTube API policies prohibit downloading/caching audiovisual content and providing offline playback without YouTube's prior approval. Import local audio that you have rights to use instead.
 
@@ -47,4 +61,4 @@ The APK is `app/build/outputs/apk/debug/app-debug.apk`. The pull-request GitHub 
 
 ## Planned, not implemented
 
-Authenticated Wi-Fi pairing, NSD discovery, TLS/WebSockets, remote controls, offline storage and authorized media acquisition, playlist-to-media matching, periodic library sync, schedules, timezone handling, automatic volume, presence automation and reboot recovery. Media playback foreground services are used only during real playback.
+Authenticated Wi-Fi pairing, NSD discovery, TLS/WebSockets, remote controls, HomeDJ-owned offline storage and authorized media acquisition, playlist-to-media matching, periodic library sync, schedules, timezone handling, automatic volume, presence automation and reboot recovery. Media playback foreground services are used only during real playback.

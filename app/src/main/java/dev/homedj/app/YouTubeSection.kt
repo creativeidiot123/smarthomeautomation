@@ -26,14 +26,29 @@ internal fun YouTubeSection(
     onDisconnect: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
     onImportPlaylist: (String) -> Unit,
+    onDownloadPlaylist: (String) -> Unit,
 ) {
     var playlistLink by rememberSaveable { mutableStateOf("") }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("YouTube playlists", style = MaterialTheme.typography.titleLarge)
+            Text("Browse account playlists through Google or send a playlist URL to Termux for local audio downloads.")
+            OutlinedTextField(
+                value = playlistLink,
+                onValueChange = { if (it.length <= 2048) playlistLink = it },
+                label = { Text("YouTube Music playlist URL") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Button(
+                onClick = { onDownloadPlaylist(playlistLink) },
+                enabled = playlistLink.isNotBlank(),
+            ) { Text("Download playlist in Termux") }
             Text(
-                "Browse your playlists and track names. YouTube audio cannot be " +
-                    "downloaded or played offline through this integration."
+                "Requires Termux, yt-dlp, FFmpeg and shared-storage access on this phone. " +
+                    "Use only for media you have permission to download. " +
+                    "After completion, choose the saved files using the local audio picker.",
+                style = MaterialTheme.typography.bodySmall,
             )
             if (!state.authorized) {
                 Button(onClick = onConnect) { Text("Connect YouTube account") }
@@ -42,17 +57,10 @@ internal fun YouTubeSection(
                     OutlinedButton(onClick = onConnect) { Text("Sync playlists") }
                     OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
                 }
-                OutlinedTextField(
-                    value = playlistLink,
-                    onValueChange = { if (it.length <= 2048) playlistLink = it },
-                    label = { Text("YouTube Music playlist link") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
                 Button(
                     onClick = { onImportPlaylist(playlistLink) },
                     enabled = !state.loadingPlaylists && playlistLink.isNotBlank(),
-                ) { Text("Import playlist link") }
+                ) { Text("Browse playlist link") }
                 when {
                     state.loadingPlaylists -> Text("Loading playlists…")
                     state.playlists.isEmpty() -> Text("No playlists found for this YouTube channel.")

@@ -1,6 +1,7 @@
 package dev.homedj.app
 
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -45,6 +46,18 @@ class HomeDjActivity : ComponentActivity() {
     private val youtube: YouTubeViewModel by viewModels()
     private var authorizationPending = false
     private var revokePending = false
+    private var pendingTermuxPlaylist: String? = null
+
+    private val termuxPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val playlistId = pendingTermuxPlaylist
+            pendingTermuxPlaylist = null
+            if (granted && playlistId != null && roleModel.state.value.mode == HomeDjMode.SERVER) {
+                launchTermuxDownload(playlistId)
+            } else if (!granted) {
+                downloadMessage("Grant HomeDJ permission to run Termux commands in Android app settings.")
+            }
+        }
 
     private val scopes = listOf(Scope(YOUTUBE_SCOPE))
     private val audioPicker =
@@ -134,6 +147,44 @@ class HomeDjActivity : ComponentActivity() {
         youtube.authorized(token, result.toGoogleSignInAccount()?.account)
     }
 
+    private fun downloadMessage(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun requestTermuxDownload(link: String) {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER || pendingTermuxPlaylist != null) return
+        val playlistId = YouTubePlaylistLinks.idFromLink(link)
+        if (playlistId == null) {
+            downloadMessage("Paste a valid YouTube or YouTube Music playlist URL.")
+            return
+        }
+        if (!TermuxPlaylistDownloads.isInstalled(this)) {
+            downloadMessage("Install Termux and set up yt-dlp, FFmpeg, and storage access first.")
+            return
+        }
+        if (checkSelfPermission(TermuxPlaylistDownloads.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            pendingTermuxPlaylist = playlistId
+            termuxPermissionLauncher.launch(TermuxPlaylistDownloads.PERMISSION)
+            return
+        }
+        launchTermuxDownload(playlistId)
+    }
+
+    private fun launchTermuxDownload(playlistId: String) {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER) return
+        try {
+            val started = TermuxPlaylistDownloads.start(this, playlistId)
+            if (started) {
+                downloadMessage("Sent to Termux. Check its terminal for progress and errors.")
+            } else {
+                downloadMessage("Termux did not accept the command. Check its setup and permissions.")
+            }
+        } catch (failure: Exception) {
+            Log.w("HomeDJ", "Termux command handoff failed: " + failure.javaClass.simpleName)
+            downloadMessage("Could not start Termux. Check external-app permission and setup.")
+        }
+    }
+
     private fun disconnectYouTube() {
         if (revokePending || authorizationPending) return
         val account = youtube.authorizedAccount
@@ -188,6 +239,7 @@ class HomeDjActivity : ComponentActivity() {
                             onDisconnectYouTube = ::disconnectYouTube,
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
+                            onDownloadPlaylist = ::requestTermuxDownload,
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
                         )
                     }
@@ -266,6 +318,7 @@ private fun ServerScreen(
     onDisconnectYouTube: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
     onImportPlaylist: (String) -> Unit,
+    onDownloadPlaylist: (String) -> Unit,
     onSwitch: () -> Unit,
 ) {
     ScreenFrame {
@@ -306,6 +359,7 @@ private fun ServerScreen(
             onDisconnect = onDisconnectYouTube,
             onSelectPlaylist = onSelectPlaylist,
             onImportPlaylist = onImportPlaylist,
+            onDownloadPlaylist = onDownloadPlaylist,
         )
         Text("Local playback works without YouTube. Remote Wi-Fi control is not enabled yet.")
         TextButton(onClick = onSwitch, enabled = !changing) { Text("Switch to Controller mode") }
