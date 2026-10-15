@@ -5,17 +5,25 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -34,102 +42,181 @@ internal fun YouTubeSection(
     onToggleAutoPlaylist: (String) -> Unit,
 ) {
     var playlistLink by rememberSaveable { mutableStateOf("") }
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("YouTube playlists", style = MaterialTheme.typography.titleLarge)
-            Text("Browse YouTube playlists, play tracks or download audio directly to this phone.")
+    var showOptions by rememberSaveable { mutableStateOf(false) }
+    var showLink by rememberSaveable { mutableStateOf(false) }
+    var showPlaylists by rememberSaveable { mutableStateOf(true) }
+    var confirmDisconnect by rememberSaveable { mutableStateOf(false) }
+
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Disconnect YouTube?") },
+            text = { Text("HomeDJ will revoke access, erase saved playlist details and stop automatic downloads. Already downloaded audio stays on this phone.") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmDisconnect = false
+                    onDisconnect()
+                }) { Text("Disconnect") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDisconnect = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    Text("YouTube Music", style = MaterialTheme.typography.titleLarge)
+    if (!state.authorized) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            shape = RoundedCornerShape(20.dp),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Bring in your playlists", style = MaterialTheme.typography.titleMedium)
+                Text("Connect YouTube on Samsung to sync your playlists and save available audio.")
+                Button(onClick = onConnect) { Text("Connect YouTube") }
+            }
+        }
+        if (state.savedSnapshot) {
+            Text("Showing saved playlist details. Connect to refresh them.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    } else {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("Account connected", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = onConnect, enabled = !state.loadingPlaylists) { Text("Sync playlists") }
+        }
+    }
+    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+
+    val selected = state.selectedPlaylistId
+    if (selected != null && !showPlaylists) {
+        TextButton(onClick = { showPlaylists = true }) { Text("← All playlists") }
+        Text(state.playlists.firstOrNull { it.id == selected }?.title ?: "Playlist",
+            style = MaterialTheme.typography.headlineSmall)
+        if (state.loadingTracks) {
+            Text("Loading songs…")
+        } else {
+            Text("${state.tracks.size} songs",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state.tracks.isNotEmpty()) {
+                FilledTonalButton(onClick = onDownloadSelected) { Text("Save playlist offline") }
+            } else {
+                Text("No songs are available in this playlist.")
+            }
+            state.tracks.take(50).forEach { track ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(track.title, style = MaterialTheme.typography.bodyLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onStreamTrack(track) }) {
+                            Text(if (track.id in state.offlineIds) "Play offline" else "Play")
+                        }
+                        if (track.id !in state.offlineIds) {
+                            OutlinedButton(onClick = { onDownloadTrack(track) }) { Text("Save") }
+                        } else {
+                            Text("Saved", modifier = Modifier.align(Alignment.CenterVertically),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            if (state.tracks.size > 50) {
+                Text("Showing the first 50 of ${state.tracks.size} songs.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    } else {
+        Text("Your playlists", style = MaterialTheme.typography.titleMedium)
+        if (state.loadingPlaylists) Text("Syncing playlists…")
+        else if (state.playlists.isEmpty()) Text("No playlists here yet. Connect or sync your account.")
+        if (!state.loadingPlaylists) {
+            state.playlists.forEach { playlist ->
+                Card(
+                    onClick = {
+                        showPlaylists = false
+                        onSelectPlaylist(playlist.id)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (playlist.id == selected) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.surfaceContainerLow
+                    ),
+                ) {
+                    Column(Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(playlist.title, style = MaterialTheme.typography.titleMedium)
+                        Text("${playlist.itemCount} songs · Tap to browse",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (state.authorized) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Auto-save on Wi-Fi", style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = playlist.id in state.autoDownloadIds,
+                                    onCheckedChange = { onToggleAutoPlaylist(playlist.id) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (state.authorized) {
+        TextButton(onClick = { showLink = !showLink }) {
+            Text(if (showLink) "Hide playlist link" else "Browse playlist by link")
+        }
+        if (showLink) {
             OutlinedTextField(
                 value = playlistLink,
                 onValueChange = { if (it.length <= 2048) playlistLink = it },
-                label = { Text("YouTube Music playlist URL") },
-                modifier = Modifier.fillMaxWidth(),
+                label = { Text("YouTube playlist URL") },
                 singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Button(
-                onClick = { onDownloadPlaylist(playlistLink) },
-                enabled = state.authorized && playlistLink.isNotBlank(),
-            ) { Text("Save linked playlist offline") }
-            Text(
-                "No Termux is required. HomeDJ stores playable audio in its private storage. " +
-                    "Only save music you have permission to download. " +
-                    "Restricted or DRM-protected tracks are not supported.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (!state.authorized) {
-                Button(onClick = onConnect) { Text("Connect YouTube account") }
-                if (state.playlists.isNotEmpty()) {
-                    Text(
-                        "Saved playlist snapshot (may be outdated). Connect to refresh metadata. " +
-                            "Songs still need a local audio file for playback.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onConnect) { Text("Sync playlists") }
-                    OutlinedButton(onClick = onDisconnect) { Text("Disconnect and erase saved playlists") }
-                }
-                OutlinedButton(onClick = { onAutoEnabled(!state.autoEnabled) }) {
-                    Text(if (state.autoEnabled) "Disable automatic sync/downloads"
-                        else "Enable 12-hour automatic sync (unmetered Wi-Fi)")
-                }
-                Text(
-                    "Background playlist sync is approximate. Selected playlists use HomeDJ's " +
-                        "native download workers when on unmetered Wi-Fi.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Button(
-                    onClick = { onImportPlaylist(playlistLink) },
-                    enabled = !state.loadingPlaylists && playlistLink.isNotBlank(),
-                ) { Text("Browse playlist link") }
+            Button(onClick = { onImportPlaylist(playlistLink) },
+                enabled = playlistLink.isNotBlank() && !state.loadingPlaylists) {
+                Text("Browse link")
             }
-            if (state.loadingPlaylists) Text("Loading playlists…")
-            if (!state.loadingPlaylists && state.authorized && state.playlists.isEmpty()) {
-                Text("No playlists found for this YouTube channel.")
+            OutlinedButton(onClick = { onDownloadPlaylist(playlistLink) },
+                enabled = playlistLink.isNotBlank()) {
+                Text("Save link offline")
             }
-            if (!state.loadingPlaylists) {
-                for (playlist in state.playlists) {
-                    OutlinedButton(
-                        onClick = { onSelectPlaylist(playlist.id) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(playlist.title + " (" + playlist.itemCount + ")")
-                    }
-                    if (state.authorized) {
-                        OutlinedButton(onClick = { onToggleAutoPlaylist(playlist.id) }) {
-                            Text(if (playlist.id in state.autoDownloadIds) "Stop auto-download: "
-                                + playlist.title else "Auto-download: " + playlist.title)
+        }
+        TextButton(onClick = { showOptions = !showOptions }) {
+            Text(if (showOptions) "Hide library settings" else "Library settings")
+        }
+        if (showOptions) {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Automatic sync", style = MaterialTheme.typography.titleMedium)
+                            Text("About every 12 hours on unmetered Wi-Fi.",
+                                style = MaterialTheme.typography.bodySmall)
                         }
+                        Switch(checked = state.autoEnabled,
+                            onCheckedChange = onAutoEnabled)
+                    }
+                    Text("Only download audio you have permission to save. Protected or unavailable songs cannot be downloaded.",
+                        style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { confirmDisconnect = true }) {
+                        Text("Disconnect and erase playlists")
                     }
                 }
             }
-            if (state.loadingTracks) Text("Loading tracks…")
-            if (state.selectedPlaylistId != null && !state.loadingTracks) {
-                Text(
-                    "Tracks (" + state.tracks.size + ")",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                if (state.tracks.isEmpty()) Text("No cached/available tracks in this playlist.")
-                if (state.tracks.isNotEmpty()) {
-                    Button(onClick = onDownloadSelected) { Text("Save selected playlist offline") }
-                }
-                state.tracks.take(50).forEachIndexed { index, track ->
-                    Text((index + 1).toString() + ". " + track.title)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { onStreamTrack(track) }) {
-                            Text(if (track.id in state.offlineIds) "Play offline" else "Play")
-                        }
-                        OutlinedButton(onClick = { onDownloadTrack(track) }) {
-                            Text(if (track.id in state.offlineIds) "Saved" else "Save")
-                        }
-                    }
-                }
-                if (state.tracks.size > 50) {
-                    Text("Showing the first 50 tracks of " + state.tracks.size + ".")
-                }
-            }
-            state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }
 }
