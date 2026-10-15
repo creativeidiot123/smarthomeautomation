@@ -40,6 +40,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
+internal enum class HomeDjPage(val label: String) {
+    PLAYER("Player"),
+    LIBRARY("Library"),
+    SETUP("Setup"),
+}
+
 /** Use the phone's accessible Material You colors without changing the app's media owners. */
 @Composable
 internal fun HomeDjTheme(content: @Composable () -> Unit) {
@@ -83,9 +89,9 @@ internal fun ScreenFrame(title: String, content: @Composable ColumnScope.() -> U
 @Composable
 internal fun HomeDjTabs(selected: Int, onSelect: (Int) -> Unit) {
     TabRow(selectedTabIndex = selected) {
-        listOf("Player", "Library", "Setup").forEachIndexed { index, label ->
+        HomeDjPage.entries.forEachIndexed { index, page ->
             Tab(selected = selected == index, onClick = { onSelect(index) },
-                text = { Text(label, maxLines = 1) })
+                text = { Text(page.label, maxLines = 1) })
         }
     }
 }
@@ -151,6 +157,7 @@ internal fun ServerScreen(
     onSwitch: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    var showPlaylists by rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
     ScreenFrame("Samsung · Server") {
         Text(
             if (status.connected) "Ready to play on this phone"
@@ -204,6 +211,8 @@ internal fun ServerScreen(
             }
             1 -> YouTubeSection(
                 state = youtubeState,
+                showPlaylists = showPlaylists,
+                onShowPlaylistsChange = { showPlaylists = it },
                 onConnect = onConnectYouTube,
                 onDisconnect = onDisconnectYouTube,
                 onSelectPlaylist = onSelectPlaylist,
