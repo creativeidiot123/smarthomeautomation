@@ -36,7 +36,9 @@ class TermuxPlaylistDownloadsTest {
         val expected = arrayOf(
             "--yes-playlist", "--ignore-errors", "--extract-audio",
             "--audio-format", "mp3", "--audio-quality", "5",
-            "--no-overwrites", "--paths", "/storage/emulated/0/Music/HomeDJ",
+            "--no-overwrites", "--download-archive",
+            "/storage/emulated/0/Music/HomeDJ/downloaded-ids.txt",
+            "--paths", "/storage/emulated/0/Music/HomeDJ",
             "--output", "%(playlist_title).80B/%(playlist_index)03d - %(title).140B [%(id)s].%(ext)s",
             "https://www.youtube.com/playlist?list=OLAK5uy_123",
         )
