@@ -1,15 +1,20 @@
 package dev.homedj.app
 
+import android.os.Bundle
 import android.os.Process
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.ListenableFuture
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,11 +50,33 @@ class PlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
         player = localPlayer
+        // Every new queue starts shuffled; the shuffle button still turns it off for that queue.
+        localPlayer.shuffleModeEnabled = true
         localPlayer.addListener(PlaybackRecovery(localPlayer, resolver, roleScope))
+        val scheduler = MusicScheduler(this, localPlayer, roleScope)
+        localPlayer.addListener(scheduler)
         librarySession = MediaLibrarySession.Builder(
             this,
             localPlayer,
-            object : MediaLibrarySession.Callback {},
+            object : MediaLibrarySession.Callback {
+                override fun onConnect(
+                    session: MediaSession, controller: MediaSession.ControllerInfo,
+                ): MediaSession.ConnectionResult =
+                    scheduler.connectionResult(session, controller) ?: super.onConnect(session, controller)
+
+                override fun onCustomCommand(
+                    session: MediaSession, controller: MediaSession.ControllerInfo,
+                    customCommand: SessionCommand, args: Bundle,
+                ): ListenableFuture<SessionResult> = scheduler.onCustomCommand(customCommand, args)
+
+                override fun onSetMediaItems(
+                    mediaSession: MediaSession, controller: MediaSession.ControllerInfo,
+                    mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long,
+                ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                    localPlayer.shuffleModeEnabled = true
+                    return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+                }
+            },
         ).build()
         roleScope.launch {
             ModeStore(this@PlaybackService).mode
@@ -61,6 +88,9 @@ class PlaybackService : MediaLibraryService() {
                     if (mode != HomeDjMode.SERVER) {
                         localPlayer.stop()
                         localPlayer.clearMediaItems()
+                        ScheduleAlarms.cancel(this@PlaybackService)
+                    } else {
+                        scheduler.arm()
                     }
                 }
         }

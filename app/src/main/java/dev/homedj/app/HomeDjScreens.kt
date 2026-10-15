@@ -165,6 +165,14 @@ internal fun ServerScreen(
     onAutoEnabled: (Boolean) -> Unit,
     onToggleAutoPlaylist: (String) -> Unit,
     onSwitch: () -> Unit,
+    scheduleState: ScheduleUiState,
+    onResumeSchedule: () -> Unit,
+    onJumpTo: (Int) -> Unit,
+    onPlayNext: (YouTubeTrack) -> Unit,
+    onAddToQueue: (YouTubeTrack) -> Unit,
+    onSaveSlot: (id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>) -> Unit,
+    onDeleteSlot: (String) -> Unit,
+    onAllowExactAlarms: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showPlaylists by rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
@@ -209,6 +217,8 @@ internal fun ServerScreen(
                         }
                     }
                 }
+                ScheduleStatusCard(status, scheduleState.slots.isNotEmpty(), onResumeSchedule)
+                UpNextSection(status.upNext, onJumpTo)
                 Text("Play something", style = MaterialTheme.typography.titleMedium)
                 FilledTonalButton(onClick = onPlayDownloads, enabled = status.connected && !changing,
                     modifier = Modifier.fillMaxWidth()) { Text("Play offline songs") }
@@ -217,6 +227,15 @@ internal fun ServerScreen(
                 Text("Your YouTube playlists and tracks are in Library.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                ScheduleSection(
+                    state = scheduleState,
+                    playlists = youtubeState.playlists,
+                    canImport = youtubeState.authorized,
+                    onImportPlaylist = onImportPlaylist,
+                    onSave = onSaveSlot,
+                    onDelete = onDeleteSlot,
+                    onAllowExactAlarms = onAllowExactAlarms,
+                )
             }
             1 -> YouTubeSection(
                 state = youtubeState,
@@ -228,6 +247,8 @@ internal fun ServerScreen(
                 onImportPlaylist = onImportPlaylist,
                 onDownloadPlaylist = onDownloadPlaylist,
                 onStreamTrack = onStreamTrack,
+                onPlayNext = onPlayNext,
+                onAddToQueue = onAddToQueue,
                 onDownloadTrack = onDownloadTrack,
                 onDownloadSelected = onDownloadSelected,
                 onAutoEnabled = onAutoEnabled,

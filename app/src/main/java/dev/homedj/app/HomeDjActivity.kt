@@ -10,6 +10,8 @@ import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.provider.Settings
+import android.content.ActivityNotFoundException
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -18,6 +20,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -37,6 +40,7 @@ class HomeDjActivity : ComponentActivity() {
     private val playback: ServerPlaybackViewModel by viewModels()
     private val youtube: YouTubeViewModel by viewModels()
     private val remote: RemoteControllerViewModel by viewModels()
+    private val schedule: ScheduleViewModel by viewModels()
     private var authorizationPending = false
     private var revokePending = false
     private val scopes = listOf(Scope(YOUTUBE_SCOPE))
@@ -87,6 +91,19 @@ class HomeDjActivity : ComponentActivity() {
                 }
             }
         }
+
+    private val exactAlarmSettings =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { schedule.refreshPermission() }
+
+    private fun requestExactAlarms() {
+        if (Build.VERSION.SDK_INT < 31) return
+        try {
+            exactAlarmSettings.launch(
+                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.fromParts("package", packageName, null)))
+        } catch (missing: ActivityNotFoundException) {
+            downloadMessage("Allow HomeDJ under Settings > Apps > Special access > Alarms & reminders.")
+        }
+    }
 
     private fun requestCast() {
         if (roleModel.state.value.mode != HomeDjMode.CONTROLLER || !remote.state.value.connected) return
@@ -286,6 +303,9 @@ class HomeDjActivity : ComponentActivity() {
                         }
                         val status by playback.status.collectAsStateWithLifecycle()
                         val youtubeState by youtube.state.collectAsStateWithLifecycle()
+                        val scheduleState by schedule.state.collectAsStateWithLifecycle()
+                        // Cached song counts change whenever Library syncs playlists or their songs.
+                        LaunchedEffect(youtubeState.playlists, youtubeState.tracks) { schedule.load() }
                         val remoteRunning by RemoteServerService.running.collectAsStateWithLifecycle()
                         val remoteAddress = remember(remoteRunning) { RemotePrefs.localAddress(this@HomeDjActivity) }
                         val pairingCode = remember { RemotePrefs(this@HomeDjActivity).serverKey() }
@@ -315,6 +335,14 @@ class HomeDjActivity : ComponentActivity() {
                             onAutoEnabled = youtube::setAutoEnabled,
                             onToggleAutoPlaylist = youtube::toggleAutoPlaylist,
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
+                            scheduleState = scheduleState,
+                            onResumeSchedule = playback::resumeSchedule,
+                            onJumpTo = playback::jumpTo,
+                            onPlayNext = playback::playNext,
+                            onAddToQueue = playback::addToQueue,
+                            onSaveSlot = schedule::save,
+                            onDeleteSlot = schedule::delete,
+                            onAllowExactAlarms = ::requestExactAlarms,
                         )
                     }
                     role.mode == HomeDjMode.CONTROLLER -> {

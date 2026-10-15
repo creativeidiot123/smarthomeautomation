@@ -7,12 +7,27 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /** One temporary PCM sink on Samsung; not a second Media3 queue or library owner. */
 internal object LiveAudioSink {
+    private val sinks = AtomicInteger()
+
+    /** True while a cast owns the speakers, so the music schedule does not play over it. */
+    val active: Boolean get() = sinks.get() > 0
+
     suspend fun play(context: Context, receive: () -> ByteArray) = withContext(Dispatchers.IO) {
+        sinks.incrementAndGet()
+        try {
+            output(context, receive)
+        } finally {
+            sinks.decrementAndGet()
+        }
+    }
+
+    private fun output(context: Context, receive: () -> ByteArray) {
         val format = AudioFormat.Builder()
             .setSampleRate(LiveAudioFormat.SAMPLE_RATE)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)

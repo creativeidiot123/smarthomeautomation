@@ -38,6 +38,8 @@ internal fun YouTubeSection(
     onImportPlaylist: (String) -> Unit,
     onDownloadPlaylist: (String) -> Unit,
     onStreamTrack: (YouTubeTrack) -> Unit,
+    onPlayNext: (YouTubeTrack) -> Unit,
+    onAddToQueue: (YouTubeTrack) -> Unit,
     onDownloadTrack: (YouTubeTrack) -> Unit,
     onDownloadSelected: () -> Unit,
     onAutoEnabled: (Boolean) -> Unit,
@@ -125,6 +127,10 @@ internal fun YouTubeSection(
                             Text("Saved", modifier = Modifier.align(Alignment.CenterVertically),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { onPlayNext(track) }) { Text("Play next") }
+                        TextButton(onClick = { onAddToQueue(track) }) { Text("Add to queue") }
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
