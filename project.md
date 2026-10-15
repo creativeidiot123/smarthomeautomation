@@ -12,3 +12,5 @@
 - The older shared `Music/HomeDJ` MediaStore scan remains optional for legacy audio; it requires READ_MEDIA_AUDIO/READ_EXTERNAL_STORAGE and never invokes Termux. No Room database or schema change.
 - GPL obligations require assessment before distributing linked APKs; neither Metrolist source nor InnerTubeX is bundled. YouTube's unofficial extraction can stop working at any time and doesn't unlock restricted content.
 - Physical device validation, scheduling, timezone/volume automation, reboot autoplay and full automatic presence control remain incomplete.
+
+- Paired LAN control retains one authenticated short-lived TCP request per operation (no new transport/dependency). The Controller retries after 1, 2, 4, 8, 16 and capped 30 seconds while disconnected, polls every 6 seconds when reachable, and reconnects immediately on Wi-Fi availability. The Samsung opt-in foreground listener uses START_STICKY for Android-managed process restarts; it remains subject to OS/OEM background limits. Samsung shows its Wi-Fi IPv4 rather than a cellular/VPN address, and pairing still requires a manual private IPv4 (reserve its DHCP lease to keep it stable).
