@@ -48,7 +48,7 @@ internal fun RemoteControllerScreen(
     onSwitch: () -> Unit,
 ) {
     var host by remember { mutableStateOf(state.host) }
-    var code by rememberSaveable { mutableStateOf(state.pairingCode) }
+    var code by remember { mutableStateOf(state.pairingCode) }
     ScreenFrame {
         Text("Controller mode", style = MaterialTheme.typography.titleLarge)
         ElevatedCard(Modifier.fillMaxWidth()) {
