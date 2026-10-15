@@ -10,10 +10,11 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import dev.homedj.app.PlaybackSnapshot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ExecutionException
+
+data class LocalAudio(val uri: Uri, val title: String)
 
 /** UI projection of the one Media3 session; it does not own playback or a second queue. */
 class ServerPlaybackViewModel(application: Application) : AndroidViewModel(application) {
@@ -72,16 +73,24 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
     fun next() { controller?.seekToNextMediaItem() }
     fun previous() { controller?.seekToPreviousMediaItem() }
 
-    fun playPickedAudio(uri: Uri, title: String) {
+    fun toggleShuffle() {
+        controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }
+    }
+
+    /** A fresh user-picked queue is sent to the service owner in a single Media3 command. */
+    fun playPickedAudio(selections: List<LocalAudio>) {
+        if (selections.isEmpty()) return
         val active = controller ?: run {
             mutableStatus.value = mutableStatus.value.copy(error = "Media service not connected")
             return
         }
-        active.setMediaItem(
-            MediaItem.Builder()
-                .setUri(uri)
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
-                .build()
+        active.setMediaItems(
+            selections.map { selected ->
+                MediaItem.Builder()
+                    .setUri(selected.uri)
+                    .setMediaMetadata(MediaMetadata.Builder().setTitle(selected.title).build())
+                    .build()
+            }
         )
         active.prepare()
         active.play()
@@ -97,6 +106,8 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
                 isPlaying = player.isPlaying,
                 hasNext = player.hasNextMediaItem(),
                 hasPrevious = player.hasPreviousMediaItem(),
+                queueSize = player.mediaItemCount,
+                shuffle = player.shuffleModeEnabled,
             ),
             error = if (player.playerError != null) "Unable to play this audio file" else null,
         )

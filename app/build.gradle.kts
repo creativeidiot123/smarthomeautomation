@@ -31,5 +31,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.8.1")
     implementation("androidx.media3:media3-session:1.8.1")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
+    implementation("com.google.android.gms:play-services-auth:21.6.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
