@@ -85,7 +85,10 @@ internal object NativeAudioSource {
         }
     }
 
-    suspend fun resolve(id: String): Link = withContext(Dispatchers.IO) {
+    suspend fun resolve(id: String): Link = withContext(Dispatchers.IO) { resolveBlocking(id) }
+
+    /** Media3's ResolvingDataSource invokes this on its background loader thread. */
+    internal fun resolveBlocking(id: String): Link {
         require(validId(id)) { "Invalid YouTube video ID" }
         initialize()
         val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$id")
