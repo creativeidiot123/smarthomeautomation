@@ -85,7 +85,10 @@ internal object NativeAudioSource {
         }
     }
 
-    suspend fun resolve(id: String): Link = withContext(Dispatchers.IO) {
+    suspend fun resolve(id: String): Link = withContext(Dispatchers.IO) { resolveBlocking(id) }
+
+    /** Media3's ResolvingDataSource invokes this on its background loader thread. */
+    internal fun resolveBlocking(id: String): Link {
         require(validId(id)) { "Invalid YouTube video ID" }
         initialize()
         val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$id")
@@ -96,6 +99,6 @@ internal object NativeAudioSource {
         }
         val chosen = candidates.maxByOrNull { it.averageBitrate }
             ?: throw IOException("No unprotected, directly downloadable audio stream available")
-        Link(chosen.content, chosen.format?.suffix ?: "m4a")
+        return Link(chosen.content, chosen.format?.suffix ?: "m4a")
     }
 }

@@ -5,6 +5,9 @@ import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.common.util.UnstableApi
@@ -25,9 +28,14 @@ class PlaybackService : MediaLibraryService() {
     private var player: ExoPlayer? = null
     private var librarySession: MediaLibrarySession? = null
 
+    @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     override fun onCreate() {
         super.onCreate()
+        val dataSource = ResolvingDataSource.Factory(
+            DefaultDataSource.Factory(this), HomeDjMediaResolver(this)
+        )
         val localPlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
