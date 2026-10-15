@@ -17,26 +17,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -290,7 +272,7 @@ class HomeDjActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val role by roleModel.state.collectAsStateWithLifecycle()
-            MaterialTheme {
+            HomeDjTheme {
                 when {
                     !role.loaded -> RoleLoadingScreen(role.error)
                     role.mode == HomeDjMode.SERVER -> {
@@ -374,138 +356,6 @@ class HomeDjActivity : ComponentActivity() {
 
     private companion object {
         const val YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
-    }
-}
-
-@Composable
-internal fun ScreenFrame(content: @Composable () -> Unit) {
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            Text("HomeDJ", style = MaterialTheme.typography.headlineLarge)
-            content()
-        }
-    }
-}
-
-@Composable
-private fun RoleLoadingScreen(error: String?) {
-    ScreenFrame {
-        Text(error ?: "Loading device role…")
-    }
-}
-
-@Composable
-private fun RolePicker(changing: Boolean, onServer: () -> Unit, onController: () -> Unit) {
-    ScreenFrame {
-        Text("How will this phone be used?", style = MaterialTheme.typography.titleLarge)
-        ElevatedCard {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Server", style = MaterialTheme.typography.titleMedium)
-                Text("Plays music locally through this phone's audio output. Choose on Samsung.")
-                Button(onClick = onServer, enabled = !changing) { Text("Use as Server") }
-            }
-        }
-        ElevatedCard {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Controller", style = MaterialTheme.typography.titleMedium)
-                Text("Will remotely control the server after secure pairing. Choose on OnePlus.")
-                Button(onClick = onController, enabled = !changing) { Text("Use as Controller") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ServerScreen(
-    status: ServerPlaybackUiState,
-    youtubeState: YouTubeUiState,
-    remoteRunning: Boolean,
-    remoteAddress: String,
-    remotePairingCode: String,
-    onRemoteToggle: (Boolean) -> Unit,
-    changing: Boolean,
-    onPickAudio: () -> Unit,
-    onPlayDownloads: () -> Unit,
-    onPlaySharedDownloads: () -> Unit,
-    onPlayPause: () -> Unit,
-    onNext: () -> Unit,
-    onPrevious: () -> Unit,
-    onShuffle: () -> Unit,
-    onConnectYouTube: () -> Unit,
-    onDisconnectYouTube: () -> Unit,
-    onSelectPlaylist: (String) -> Unit,
-    onImportPlaylist: (String) -> Unit,
-    onDownloadPlaylist: (String) -> Unit,
-    onStreamTrack: (YouTubeTrack) -> Unit,
-    onDownloadTrack: (YouTubeTrack) -> Unit,
-    onDownloadSelected: () -> Unit,
-    onAutoEnabled: (Boolean) -> Unit,
-    onToggleAutoPlaylist: (String) -> Unit,
-    onSwitch: () -> Unit,
-) {
-    ScreenFrame {
-        Text("Server mode", style = MaterialTheme.typography.titleLarge)
-        Text(
-            if (status.connected) "Playback service connected"
-            else "Connecting to playback service…",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        ElevatedCard(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Now playing", style = MaterialTheme.typography.labelLarge)
-                Text(status.snapshot.title, style = MaterialTheme.typography.titleLarge)
-                Text("Queue: " + status.snapshot.queueSize + " local tracks")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onPrevious, enabled = status.snapshot.hasPrevious) {
-                        Text("Previous")
-                    }
-                    Button(onClick = onPlayPause, enabled = status.snapshot.hasTrack) {
-                        Text(if (status.snapshot.isPlaying) "Pause" else "Play")
-                    }
-                    OutlinedButton(onClick = onNext, enabled = status.snapshot.hasNext) {
-                        Text("Next")
-                    }
-                }
-                OutlinedButton(
-                    onClick = onShuffle, enabled = status.snapshot.queueSize > 1,
-                ) { Text(if (status.snapshot.shuffle) "Shuffle: on" else "Shuffle: off") }
-            }
-        }
-        Button(onClick = onPickAudio, enabled = status.connected && !changing) {
-            Text("Choose local audio files")
-        }
-        Button(onClick = onPlayDownloads, enabled = status.connected && !changing) {
-            Text("Play saved HomeDJ songs (offline)")
-        }
-        OutlinedButton(onClick = onPlaySharedDownloads, enabled = status.connected && !changing) {
-            Text("Play older shared Music/HomeDJ files")
-        }
-        status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        YouTubeSection(
-            state = youtubeState,
-            onConnect = onConnectYouTube,
-            onDisconnect = onDisconnectYouTube,
-            onSelectPlaylist = onSelectPlaylist,
-            onImportPlaylist = onImportPlaylist,
-            onDownloadPlaylist = onDownloadPlaylist,
-            onStreamTrack = onStreamTrack,
-            onDownloadTrack = onDownloadTrack,
-            onDownloadSelected = onDownloadSelected,
-            onAutoEnabled = onAutoEnabled,
-            onToggleAutoPlaylist = onToggleAutoPlaylist,
-        )
-        RemoteServerSection(
-            running = remoteRunning,
-            ip = remoteAddress,
-            code = remotePairingCode,
-            onToggle = onRemoteToggle,
-        )
-        Text("Local playback works without YouTube. Remote access is opt-in.")
-        TextButton(onClick = onSwitch, enabled = !changing) { Text("Switch to Controller mode") }
     }
 }
 
