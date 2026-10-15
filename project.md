@@ -1,22 +1,13 @@
 # HomeDJ project facts
 
-- One installable application module: `:app`, package/application ID `dev.homedj.app`.
-- Same APK installs on Samsung Galaxy M21 (Server mode) and OnePlus 12 (Controller mode).
-- Role selection is stored separately on each device via AndroidX Preferences DataStore 1.1.7.
-- Build toolchain: Gradle 8.13, AGP 8.11.1, Kotlin 2.2.20, JDK 17, compileSdk 36, minSdk 29, targetSdk 35.
-- Runtime: Compose Material3, Media3 1.8.1, Google Play services auth 21.6.0; internet permission for YouTube metadata API.
-- Server mode offers a multiple-document audio picker, a transient Media3 queue and shuffle. Android persisted URI read grants allow files to remain accessible but Media3's queue is not restored after process death.
-- YouTube playlists and tracks metadata: Android Google AuthorizationClient with `youtube.readonly` scope, YouTube Data API v3 `playlists.list(mine=true)`, `playlists.list(id=…)` for imported accessible YouTube / YouTube Music playlist links, and `playlistItems.list`. Google OAuth configuration in Cloud Console and matching Android signing SHA-1 are prerequisites for use. Does not access followed/other channels' playlists, automatically sync or download YouTube video/audio.
-- Imported playlist links are normalized and checked for trusted YouTube hosts by `YouTubePlaylistLinks`. An atomic, size-bounded app-private `SavedPlaylistStore` now persists owned/imported playlist metadata and fetched track titles. Server opening attempts non-interactive Google reauthorization and refresh; explicit account disconnect removes saved data. No authenticated token is persisted.
-- No Metrolist GPL-3.0 source has been copied, no unofficial InnerTube integration is included; YouTube browsing uses the official YouTube Data API. Optional explicit user-initiated Termux yt-dlp playlist downloads use an external app, not this API's access token; HomeDJ does not manage or verify download completion.
-- Termux handoff requires RUN_COMMAND permission, Termux installation, FFmpeg, yt-dlp, and shared storage; outputs land in Music/HomeDJ. A durable yt-dlp download archive avoids repeat downloads. `DownloadedAudioLibrary` scans Android MediaStore-indexed tracks and queues them in the existing Media3 service after explicit user action with READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE permissions.
-- No YouTube token persistence; only playlist and track title snapshots survive process death. On silent OAuth renewal or explicit connection, owned playlist metadata is refreshed. Unattended periodic refresh, Termux completion tracking, YouTube Music streaming and automatic downloads are not implemented. Disconnect requests Google revocation and erases stored metadata.
-- No Room database: **Room schema unchanged (not introduced)**.
-- Opt-in foreground `RemoteServerService` (Android connectedDevice service type) accepts AES-256-GCM private-LAN TCP messages on port 47188. A fresh 16-byte challenge authenticates each new connection to prevent replay. `RemoteChannel` owns transport framing; `RemotePrefs` owns the device-local pairing secret and controller endpoint. Controller sends status, play/pause, previous, next, shuffle and stream-volume commands to the existing Media3 session. No discovery, QR, smart-home devices or Internet exposure. Physical network/foreground lifecycle behavior remains unverified.
-- The inherited root AGENTS.md describes a different Android app (Destination) that is not present here. Its broad engineering invariants apply, not its Destination-specific commands.
-
-## Optional automation and streaming milestone
-
-- WorkManager 2.11.2 schedules inexact opt-in playlist refresh on unmetered networks. Google authorization is noninteractive and tokens remain ephemeral.
-- Termux RUN_COMMAND (>=0.109) resolves temporary public YouTube stream URLs using yt-dlp, while the existing Media3 player handles playback. No unofficial InnerTube client or second audio service.
-- Automatically downloaded playlists are explicitly selected by the user. Background yt-dlp command launches are best-effort, not completion tracking. No Room schema changes.
+- One Kotlin Android app `:app` (`dev.homedj.app`), minSdk 29, targetSdk 35, compileSdk 36, same APK on Samsung M21 and OnePlus 12.
+- Gradle 8.13, AGP 8.11.1, Kotlin 2.2.20, JDK 17; Jetpack Compose/Material 3, Media3 1.8.1, DataStore 1.1.7 and WorkManager 2.11.2.
+- Server mode owns one ExoPlayer in MediaLibraryService and all music files; Controller mode owns an AES-GCM paired private-LAN client (port 47188). Role persists per device. No second player.
+- YouTube Data API v3 and Android Google AuthorizationClient `youtube.readonly` scope return owned/imported playlist metadata and track IDs. OAuth Android client must match app signing certificate.
+- Playlist metadata is persisted app-private via bounded `SavedPlaylistStore` and is account-scoped. Tokens remain in memory; disconnect clears metadata and automatic sync selection.
+- **In-app** NewPipeExtractor v0.26.5 (JitPack, GPL-3.0-or-later) independently resolves playable public, non-DRM YouTube audio streams; JDK library desugaring enabled for supported Android devices. No Termux/yt-dlp/FFmpeg needed.
+- `OfflineAudioLibrary` owns original audio-only M4A/WebM/Opus app-private downloaded files, WorkManager per-song background jobs, atomic temp-file renames, 100-MiB track cap and 2-GiB aggregate cap. Already downloaded audio works offline via Media3.
+- `AutoLibraryWorker` refreshes playlist metadata on inexact unmetered 12-hour work and enqueues up to 150 opted-in track IDs per pass. It does not guarantee timely playback or download completion on Samsung background restrictions.
+- The older shared `Music/HomeDJ` MediaStore scan remains optional for legacy audio; it requires READ_MEDIA_AUDIO/READ_EXTERNAL_STORAGE and never invokes Termux. No Room database or schema change.
+- GPL obligations require assessment before distributing linked APKs; neither Metrolist source nor InnerTubeX is bundled. YouTube's unofficial extraction can stop working at any time and doesn't unlock restricted content.
+- Physical device validation, scheduling, timezone/volume automation, reboot autoplay and full automatic presence control remain incomplete.
