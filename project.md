@@ -12,5 +12,5 @@
 - Termux handoff requires the Termux RUN_COMMAND permission, Termux package visibility, Termux installation/configuration, FFmpeg, yt-dlp, and shared storage; outputs land in Music/HomeDJ and require manual local document selection.
 - No YouTube token or metadata persistence; authorization and browsing state are memory-only. Disconnect requests Google access revocation when the authorized account is available.
 - No Room database: **Room schema unchanged (not introduced)**.
-- Secure remote transport and hardware checks are not implemented; the LAN pairing phase remains incomplete.
+- Opt-in foreground `RemoteServerService` (Android connectedDevice service type) accepts AES-256-GCM private-LAN TCP messages on port 47188. A fresh 16-byte challenge authenticates each new connection to prevent replay. `RemoteChannel` owns transport framing; `RemotePrefs` owns the device-local pairing secret and controller endpoint. Controller sends status, play/pause, previous, next, shuffle and stream-volume commands to the existing Media3 session. No discovery, QR, smart-home devices or Internet exposure. Physical network/foreground lifecycle behavior remains unverified.
 - The inherited root AGENTS.md describes a different Android app (Destination) that is not present here. Its broad engineering invariants apply, not its Destination-specific commands.

@@ -1,4 +1,4 @@
-# HomeDJ architecture (single APK, local library and YouTube read-only browsing)
+# HomeDJ architecture (single APK, local library, YouTube metadata and LAN controller)
 
 ## Ownership
 
@@ -9,6 +9,10 @@
 - `YouTubePlaylistLinks`: pure, strict conversion of pasted HTTPS YouTube Music / YouTube playlist URLs to a safe playlist ID; never allows user-supplied destinations for API calls.
 - `YouTubePlaylistRepository`: read-only, HTTPS YouTube Data API boundary. Maps both account-owned and explicitly imported (ID-based) playlists and playlist item responses, follows distinct pagination tokens (max 100 pages), enforces timeouts and exposes sanitized errors; no file/video downloads. The Google account is the upstream authority; the network is the only source. No persisted cache or Room owner exists.
 - `YouTubeViewModel`: only in-memory owner of a short-lived access token and account reference, and screen projection for returned metadata. Latest owned-list refresh or link import cancels prior playlist fetch and track query; selection cancels prior track query. Imported playlists live only in current UI state and are discarded when the account is reauthorized or the view resets. All playlist data is discarded on server-screen disposal, disconnect or process death. Requests are restarted explicitly after reconnecting.
+- `RemotePrefs`: owns one device-local server AES-256 pairing key, server opt-in flag and controller IP/key settings. All are stored in app-private preferences (backup disabled), never logged or sent as plaintext to the server; if compromised, clearing the app data revokes pairing.
+- `RemoteChannel`: length-limited binary TCP transport on port 47188 with fresh 16-byte server challenges and AES-256-GCM-encrypted request and response frames. Untrusted/invalid requests fail closed. The pairing key is transferred outside the network by the user.
+- `RemoteServerService`: opt-in, non-exported, connectedDevice foreground service. Single listener for private-LAN requests, checks the persisted server role and server-enabled flag before each command, and holds one local `MediaController` that forwards commands to the PlaybackService. It never creates an ExoPlayer. It closes its listener, MediaController and coroutine scope on destroy. The in-process `running` flow is status projection only, not durable truth.
+- `RemoteControllerViewModel`: screen-owned poll/command loop and sole projection of remote playback state; private IPv4 addresses only. Serializes outgoing encrypted operations and cancels polling when Controller mode exits.
 - `TermuxPlaylistDownloads`: validates fixed yt-dlp command arguments for a playlist ID and starts the explicit Termux RUN_COMMAND service; Termux owns execution/storage, and HomeDJ receives no completion status. No Google tokens or raw user-provided URLs are sent.
 - `HomeDjActivity`: system audio picker, user-tapped Termux permission/download handoff, and Android Google authorization/revocation launchers; composes read-only UI state. Consent may require an Android IntentSender resolution. The token is passed to the ViewModel only after the YouTube read-only scope has been granted. Account association for revocation uses Google's deprecated account accessor while available; if unavailable the app clears local state and instructs user to revoke from Google Account settings.
 
@@ -22,4 +26,4 @@ Google Play services and an OAuth Android app registration for this APK's signin
 
 ## Next boundary
 
-Remote access requires NSD discovery, pairing, TLS and replay-safe authenticated commands feeding the **existing** Media3 session. Schedules, offline storage, volume policies, persistent queue and startup/reboot behavior require their own server-owned truth and platform-specific tests. No controller playback engine or duplicate scheduling authority is to be introduced.
+Remote control now has manually entered private-LAN pairing, encrypted authenticated commands and a foreground endpoint feeding the **existing** Media3 session. It still lacks NSD discovery, QR pairing and physical-device proof; Android can kill the process. The key must be treated as sensitive. Schedules, offline storage, volume policies, persistent queue and startup/reboot behavior require their own server-owned truth and platform-specific tests. No controller playback engine or duplicate scheduling authority is to be introduced.

@@ -11,7 +11,16 @@ Install the same APK on both devices. Choose **Server** on the Samsung Galaxy M2
 - Server mode offers **read-only YouTube authorization** with Google Play services, lists *playlists owned by the authorized YouTube channel* and lists their video titles. Refresh requires the user's action. The YouTube view and token remain in process memory only; reopening after process death requires reconnecting. Disconnect requests Google revocation when the account is available.
 - You can **paste a YouTube or YouTube Music playlist link** (including a public or accessible unlisted playlist) to browse its tracks even when it isn't owned by your channel. Imported playlist links are in-memory only and disappear on account reconnection/refresh or process restart. Private playlists require access from the signed-in account.
 - Server mode can hand a pasted YouTube / YouTube Music playlist URL to **Termux yt-dlp** for an explicit, user-initiated local audio download. HomeDJ does not manage or verify downloads; once Termux completes, manually choose the files with the local audio picker. This optional path works without Google OAuth for playlists that yt-dlp can access. Private/account-restricted content is not automatically authenticated.
-- Controller mode remains explicitly **unpaired**; no remote commands or connection have shipped.
+- Controller mode can now pair over a private IPv4 Wi-Fi connection using a server IP and a 256-bit pairing code. Requests and responses use AES-256-GCM with a fresh challenge per connection. The server runs an explicitly enabled `connectedDevice` foreground service and relays commands to its existing Media3 session. Controller mode can see current playback, play/pause, skip, toggle shuffle and adjust the Samsung's media volume. The same APK remains installed on both devices. Remote playback requires audio already selected on the server; neither YouTube media streaming nor downloading is implied by pairing.
+
+### Pair Samsung and OnePlus
+
+1. On the Samsung select **Server** and tap **Start remote access**. Keep it on private Wi-Fi with the OnePlus. Allow Android to run its connected-device foreground service.
+2. In the server's **Control from OnePlus** card, copy the IPv4 address and the pairing code. The key is sensitive and should only be shared with the other phone.
+3. On OnePlus choose **Controller**, enter the server IPv4 and pairing code, and press **Connect**. Successful pairing is saved locally (Android private app data; backup disabled) and is restored next time you open Controller mode.
+4. Select local audio on the Samsung, then control its existing queue and volume from OnePlus. When Server mode is switched off, LAN access stops. The remote service is opt-in, never started on Controller mode, and Android may kill it under battery restrictions. Opening Server mode again can restart an enabled service; force-stopping the app cannot be bypassed.
+
+Only private IPv4 addresses are accepted, port `47188` is used, and no pairing code is sent across the socket. AES-GCM encryption authenticates each operation and binds it to a random fresh server challenge. A captured request cannot be replayed in another connection. There is no automatic discovery or QR pairing yet; treat anyone who sees the code as an authorized controller. If compromised, clearing HomeDJ's app data invalidates the key (also clears the device role and saved controller pairing).
 
 The playlist-link import is an independent, official YouTube Data API implementation inspired by [Metrolist](https://github.com/MetrolistGroup/Metrolist), whose GPL-3.0 source is **not copied** into HomeDJ. Metrolist's full YouTube Music streaming/offline architecture uses an unofficial InnerTube client, authenticated sessions, and download/cache infrastructure. Those components are not part of this PR.
 
@@ -55,10 +64,10 @@ The APK is `app/build/outputs/apk/debug/app-debug.apk`. The pull-request GitHub 
 
 1. On Samsung in Server mode, select several authorized local audio files. Verify ordered next/previous, shuffle, audio focus, speaker output, screen-locked playback and continued playback after OnePlus disconnect.
 2. Reboot/force-stop and verify that selected role persists while the player queue is not falsely described as restored.
-3. Switch to Controller mode and verify that local playback stops. Verify Controller mode still cannot play or remotely command the Samsung.
+3. Enable remote access in Server mode, pair Controller via its private Wi-Fi address and secret, and test playback/volume/queue visibility on the Samsung. Test incorrect key, interrupted Wi-Fi, simultaneous commands, paused playback, role switch and service restart. Ensure Controller mode does not create or play any local audio.
 4. With configured Google OAuth and network access, authorize YouTube, list owned/private playlists, import a public YouTube Music playlist link, select a playlist, page through its videos, refresh and revoke access. Verify permission refusal, airplane mode, expired token, account revocation and app recreation. YouTube videos should never be loaded into Media3.
 5. Test both devices with Android battery restrictions; Android does not guarantee an idle server stays alive.
 
 ## Planned, not implemented
 
-Authenticated Wi-Fi pairing, NSD discovery, TLS/WebSockets, remote controls, HomeDJ-owned offline storage and authorized media acquisition, playlist-to-media matching, periodic library sync, schedules, timezone handling, automatic volume, presence automation and reboot recovery. Media playback foreground services are used only during real playback.
+Automatic network discovery, QR pairing, HomeDJ-owned offline storage and authorized media acquisition, playlist-to-media matching, periodic library sync, schedules, timezone handling, automatic volume, presence automation and reboot recovery. Media playback foreground services are used only during real playback.
