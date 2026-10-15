@@ -105,6 +105,7 @@ class RemoteServerService : Service() {
                         ) { request ->
                             handle(request)
                         }
+                    }
                 } catch (failure: Exception) {
                     if (failure is CancellationException) throw failure
                     Log.w("HomeDJRemote", "Rejected LAN request: " + failure.javaClass.simpleName)
