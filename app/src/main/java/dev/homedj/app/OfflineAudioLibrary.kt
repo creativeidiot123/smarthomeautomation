@@ -64,7 +64,10 @@ internal object OfflineAudioLibrary {
             .putString("playlistId", playlistId)
             .build()
         val request = OneTimeWorkRequestBuilder<OfflineAudioWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(
+                if (accountKey != null && playlistId != null) NetworkType.UNMETERED
+                else NetworkType.CONNECTED
+            ).build())
             .setInputData(params)
             .build()
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
@@ -72,7 +75,7 @@ internal object OfflineAudioLibrary {
         )
     }
 
-    internal suspend fun download(context: Context, id: String, authorized: () -> Boolean): File =
+    internal suspend fun download(context: Context, id: String, authorized: suspend () -> Boolean): File =
         withContext(Dispatchers.IO) {
             require(NativeAudioSource.validId(id))
             existing(context, id)?.let { return@withContext it }
@@ -106,12 +109,17 @@ internal object OfflineAudioLibrary {
                     connection.inputStream.use { input ->
                         val buffer = ByteArray(32 * 1024)
                         var countTotal = 0L
+                        var bytesSinceRoleCheck = 0L
                         while (true) {
                             coroutineContext.ensureActive()
-                            if (!authorized()) throw IOException("Download was cancelled by account change")
                             val size = input.read(buffer)
                             if (size < 0) break
                             countTotal += size
+                            bytesSinceRoleCheck += size
+                            if (bytesSinceRoleCheck >= 1024 * 1024) {
+                                if (!authorized()) throw IOException("Download stopped: server mode or consent changed")
+                                bytesSinceRoleCheck = 0
+                            }
                             if (countTotal > MAX_TRACK_BYTES || countTotal + existingSize > MAX_LIBRARY_BYTES) {
                                 throw IOException("Audio exceeds offline storage budget")
                             }
@@ -126,6 +134,7 @@ internal object OfflineAudioLibrary {
                 coroutineContext.ensureActive()
                 if (!authorized()) throw IOException("Download no longer authorized")
                 commitMutex.withLock {
+                    if (!authorized()) throw IOException("Download no longer authorized")
                     val committedBytes = folder.listFiles().orEmpty()
                         .filter { it.isFile && it.extension in extensions }
                         .sumOf { it.length().coerceAtLeast(0) }
@@ -147,12 +156,13 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
         val id = inputData.getString("videoId") ?: return Result.failure()
         val account = inputData.getString("accountKey")
         val playlist = inputData.getString("playlistId")
-        val authorized = {
-            account == null || playlist == null ||
-                AutoLibraryConfig(applicationContext).isDownloadCurrent(account, playlist)
+        val modeStore = ModeStore(applicationContext)
+        val config = AutoLibraryConfig(applicationContext)
+        val authorized: suspend () -> Boolean = {
+            modeStore.mode.first() == HomeDjMode.SERVER &&
+                (account == null || playlist == null || config.isDownloadCurrent(account, playlist))
         }
-        if (!NativeAudioSource.validId(id) ||
-            ModeStore(applicationContext).mode.first() != HomeDjMode.SERVER || !authorized()) {
+        if (!NativeAudioSource.validId(id) || !authorized()) {
             return Result.success()
         }
         return try {
