@@ -1,6 +1,6 @@
 ---
 name: android-testing-debugging
-description: "Use for Android/Kotlin testing or debugging: unit/coroutine/Flow/ViewModel/Room/Compose/instrumentation tests, ADB/Logcat, crashes, leaks, flakiness, reproduction, source investigation."
+description: "Use for Android/Kotlin testing or debugging: JVM unit/coroutine/Flow/ViewModel/codec/protocol tests, Room/Compose/instrumentation tests, regression reproducers, ADB/Logcat/dumpsys, crashes, leaks, flakiness, reproduction, source investigation."
 ---
 
 # Testing, Debugging, and Source Inspection
@@ -45,10 +45,10 @@ Lack of time, inconvenience, or an expensive suite is not a valid `N/A`. Run foc
 | 3 | One happy-path end to end | Drive the real feature path across every production layer that exists: UI/trigger -> ViewModel/owner -> repository/service -> persistence/platform -> business result -> rendered/applied observation. Do not invent a layer solely for the test. |
 | 4 | Persistence + process death | Persist representative configuration/state using the real durable boundary, discard process-owned/in-memory state, reconstruct the feature, and verify restoration from authoritative truth. ViewModel recreation alone is not process-death proof. |
 | 5 | Failure + recovery | Make the most important dependency fail or disappear, verify safe failure/no fake success or unsafe partial state, restore it, then verify convergence/retry/manual recovery according to the contract. |
-| 6 | Cross-feature interaction | Identify the few systems that can mutate, override, gate, or race the same truth. Test those collision points, such as schedule + limits + groups + allowlist/hidden + existing block reason. Do not build a Cartesian-product matrix. |
+| 6 | Cross-feature interaction | Identify the few systems that can mutate, override, gate, or race the same truth. Test those collision points, such as live cast + Media3 playback commands, manual + automatic download of one ID, or role switch + running workers/listener. Do not build a Cartesian-product matrix. |
 | 7 | Concurrency / duplicate execution | Double-trigger, rapidly toggle, overlap refreshes/work, or deliver stale completion. Verify the declared latest-wins/first-wins/single-flight/serialized/idempotent semantics, with no duplicate write, deadlock, leak, or corrupt state. |
 | 8 | UI behavior | Verify critical controls reflect backend truth, validation blocks invalid action, loading/error states are honest, navigation/recreation preserves required state, and success is not shown before the owning mutation commits. |
-| 9 | Lifecycle / reboot | For services, policies, alarms, accessibility, usage access, VPN, Device Owner, receivers, workers, or similar system-owned behavior, exercise relevant restart/reboot, background/foreground, recreation, and permission-loss paths. Ordinary CRUD may mark this `N/A` only when no extra system/lifecycle behavior exists beyond row 4. |
+| 9 | Lifecycle / reboot | For foreground services (Media3 playback, LAN listener, MediaProjection capture), START_STICKY restarts, alarms, receivers, workers, permissions, or similar system-owned behavior, exercise relevant restart/reboot, background/foreground, recreation, and permission-loss paths. Ordinary CRUD may mark this `N/A` only when no extra system/lifecycle behavior exists beyond row 4. |
 | 10 | Regression | Every fixed behavior bug gets a permanent test that reproduces the exact failure mechanism or state sequence and fails if the bug returns. If the original failure depends on unavailable OEM/hardware behavior, keep the narrowest deterministic reproducer plus the explicit device gap. |
 
 Before coding a meaningful behavior change, write a compact matrix such as:

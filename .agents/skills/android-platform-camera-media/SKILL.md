@@ -1,6 +1,6 @@
 ---
 name: android-platform-camera-media
-description: "Use for Android platform/hardware integrations: CameraX, Media3, audio/video, notifications, foreground services, PiP, pickers/sharing, sensors, permissions, callbacks/resource lifecycle."
+description: "Use for Android platform/hardware integrations: Media3 ExoPlayer/MediaSession/MediaLibraryService/MediaController, audio focus, AudioRecord/AudioTrack, MediaProjection playback capture, foreground services and FGS types, notifications, CameraX, PiP, pickers/sharing, sensors, permissions, callbacks/resource lifecycle."
 ---
 
 # Camera, Media, Notifications, Graphics, and Internationalization

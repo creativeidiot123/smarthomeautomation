@@ -1,6 +1,6 @@
 ---
 name: android-state-navigation-lifecycle
-description: "Use for Android UI state/navigation/lifecycle bugs or design: ViewModel, effects, SavedStateHandle, permissions/results, deep links, back stack, recreation/process restoration, screen orchestration."
+description: "Use for Android UI state/navigation/lifecycle bugs or design: ViewModel state, effects, SavedStateHandle/rememberSaveable, Activity Result/permission/OAuth/MediaProjection launchers, tabs/back stack, deep links, recreation/process restoration, screen orchestration."
 ---
 
 # State, Navigation, and Lifecycle
@@ -92,7 +92,7 @@ State:
 val state by viewModel.state.collectAsStateWithLifecycle()
 ```
 
-Effects should be collected in a lifecycle-aware coroutine. Use the project’s helper if present (Destination: `CollectLatestWithLifecycle(flow) { ... }` in `ui/components/LifecycleEffects.kt`). The underlying safe shape is:
+Effects should be collected in a lifecycle-aware coroutine. Use the project’s helper if present (HomeDJ has none and no navigation library; tabs are `rememberSaveable` state and truth comes from ViewModels/services). The underlying safe shape is:
 
 ```kotlin
 val lifecycleOwner = LocalLifecycleOwner.current

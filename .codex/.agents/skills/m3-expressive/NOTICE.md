@@ -13,5 +13,5 @@ commit `70ff9dcecd2cf04660109b4e4a89205a2dacd290`.
 - Material Design, Material You, Android, and Jetpack Compose are Google LLC trademarks. This vendored
   skill is not affiliated with or endorsed by Google.
 
-Destination does not redistribute the upstream reference images. Visual and example media remain
+HomeDJ does not redistribute the upstream reference images. Visual and example media remain
 linked from `SOURCE.md` to the upstream repository.

@@ -1,19 +1,19 @@
 ---
 name: m3-expressive
-description: Primary Material UI design skill for Destination. Use for Material Design 3 / M3 Expressive design or implementation: components, motion springs, shape morphing, typography, color roles, adaptive layouts, Material You, Jetpack Compose, MDC-Android, Flutter, web Material UI, or M3 design review.
+description: "Primary Material UI design skill for HomeDJ. Use for HomeDJ screen design, styling, and Material Design 3 / M3 Expressive design or implementation: components, motion springs, shape morphing, typography, color roles, adaptive layouts, Material You, Jetpack Compose, MDC-Android, Flutter, web Material UI, or M3 design review."
 ---
 
 # Material 3 Expressive
 
-## Destination integration
+## HomeDJ integration
 
-This is Destination's **primary Material UI design skill**, replacing the former `material-3` skill.
+This is HomeDJ's **primary Material UI design skill** (Compose Material 3 with dynamic color).
 Pair it with `android-compose-ui-effects` when changing Compose implementation and with
 `android-accessibility-adaptive-ui` when accessibility or adaptive behavior is in scope.
 
 This repository intentionally vendors **text guidance only**, pinned to upstream commit
 [`70ff9dcecd2cf04660109b4e4a89205a2dacd290`](https://github.com/abhixv/m3-expressive-design-skill/blob/70ff9dcecd2cf04660109b4e4a89205a2dacd290/skills/m3-expressive/SKILL.md). Do not copy the upstream image library, caption index, or refresh
-scripts into Destination. For visual anatomy, measurements, do/don't pairs, and complete screen
+scripts into HomeDJ. For visual anatomy, measurements, do/don't pairs, and complete screen
 examples, use the external links in [`SOURCE.md`](SOURCE.md) and
 [`references/visuals.md`](references/visuals.md).
 

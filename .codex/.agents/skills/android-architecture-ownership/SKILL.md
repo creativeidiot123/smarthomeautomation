@@ -1,6 +1,6 @@
 ---
 name: android-architecture-ownership
-description: "Use for Android/Kotlin architecture or ownership: state/truth/mutation owners, repositories, layers, models, DI boundaries, APIs, dependency direction, business-logic placement, file cohesion."
+description: "Use for Android/Kotlin architecture or ownership: state/truth/mutation owners, where a new class/object/function belongs, repositories/stores, layers, models, AndroidViewModel/Worker/Service construction without DI, dependency direction, business-logic placement, file cohesion and the 500-line size gate."
 ---
 
 # Android Core Architecture and Kotlin
@@ -116,7 +116,7 @@ Avoid:
 - public setters/mutable collections;
 - `lateinit` outside narrow lifecycle/test cases;
 - `object`/companion mutable state for sessions or data;
-- service locator access from arbitrary code (in Destination, framework-created components such as ViewModel factories, workers, receivers, and services resolve the composition root once via `AppServices.destinationApplicationOrNull`; that is the sanctioned entry, not a violation. Do not replace it with a DI framework or call it from composables, repositories, or domain code);
+- service locator access from arbitrary code (in HomeDJ there is no composition root: framework-created components such as `AndroidViewModel`s, Workers, and Services build thin owners from application context, e.g. `ModeStore(context)`, `RemotePrefs(context)`, `SavedPlaylistStore.shared(context)`, or call process `object` owners such as `OfflineAudioLibrary`. That is the sanctioned shape. Do not add a DI framework/Application class, construct a second instance of a shared store/player/session, or reach those owners from composables);
 - generic `Utils`, `Manager`, `Helper`, or `Base*` classes with unrelated responsibilities;
 - hidden blocking/side effects in properties, equality, constructors, mappers, and logging;
 - nullable booleans or multiple booleans representing exclusive states;

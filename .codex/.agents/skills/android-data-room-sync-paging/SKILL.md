@@ -1,6 +1,6 @@
 ---
 name: android-data-room-sync-paging
-description: "Use for Room, DataStore, repositories, cache, sync, or Paging: entities, DAOs, migrations, transactions, source of truth, freshness, outbox, account isolation, local-remote consistency."
+description: "Use for persistence and local truth: DataStore, SharedPreferences, app-private JSON/files and atomic writes, persisted keys/enum names/WorkManager names as contracts, repositories, cache freshness, sync, account isolation, local-remote consistency; Room entities/DAOs/migrations and Paging when present or being added."
 ---
 
 # Data, Room, DataStore, Sync, Cache, and Paging
@@ -115,26 +115,41 @@ Avoid delete-all/insert-all when it can erase local pending edits, break referen
 - verify downgrade policy explicitly;
 - preserve encrypted/database-key strategy.
 
-## Destination-specific Room schema evolution gate
+## HomeDJ persisted-contract gate
 
-Run this gate for **every edit**, even when the expected answer is "no persistence impact." A schema-affecting edit includes changes to `@Entity`, `@Database`, embedded/related persisted fields, table or column names, primary/foreign keys, indices, nullability/defaults, type converters, database views/FTS, raw SQL schema, triggers, or a prepackaged database. DAO query-only changes do not automatically change the schema, but still require compatibility review.
+Run this gate for **every edit**, even when the expected answer is "no persistence impact." HomeDJ has no Room database; its persisted contracts are listed in `AGENTS.md` §10: DataStore `homedj_settings` (`device_role` stored as `HomeDjMode.name`), SharedPreferences `remote_pairing` and `homedj_auto_library` keys, the `SavedPlaylistCodec` JSON fields and account-key derivation, `files/offline_audio` names and `.part` suffixes, WorkManager worker class names, unique work names and input keys, and the LAN wire protocol shared by two phones that may run different builds.
+
+If the edit does **not** change any of them, state `Persistence/wire: unchanged` in the final audit and add nothing ceremonial.
+
+If it changes one, in the same patch:
+
+1. Keep reading the old form: old key/field/name/command keeps working or is migrated on first read (read old, write new, then remove old), deterministically and without network or UI.
+2. Never rename an enum constant, worker class, or unique work name that persisted data or queued work refers to without that migration.
+3. Write files atomically (temp + rename) and keep size bounds; corrupt or unknown data maps to an explicit empty/error state, never fake success or silent deletion of user downloads.
+4. For the LAN protocol, new fields are optional and old commands keep their meaning; an incompatible change needs a version field and a clear "update both phones" error.
+5. Add a JVM test that decodes the old form (codec/parser/key) and proves the new form round-trips.
+6. Record the change in `project.md` and, if ownership changed, `architecture.md`.
+
+## Room schema evolution gate (only if Room exists or is being added)
+
+Adding Room to HomeDJ is an architecture change that needs explicit user approval. Once Room exists, run this gate for every edit. A schema-affecting edit includes changes to `@Entity`, `@Database`, embedded/related persisted fields, table or column names, primary/foreign keys, indices, nullability/defaults, type converters, database views/FTS, raw SQL schema, triggers, or a prepackaged database. DAO query-only changes do not automatically change the schema, but still require compatibility review.
 
 If the edit does **not** change the persisted Room schema:
 
-- leave `FOCUS_DATABASE_VERSION` unchanged;
+- leave the database version constant unchanged;
 - do not create an empty migration or regenerate/rewrite schema history;
 - state `Room schema: unchanged` in the final audit.
 
 If the edit changes the persisted Room schema, all of the following are mandatory in the same patch:
 
 1. Treat the checked-in previous schema JSON as the immutable old contract. Never edit, replace, or delete a schema that may represent a shipped build.
-2. Increment `FOCUS_DATABASE_VERSION` exactly once from `N` to `N + 1`; do not skip a version to conceal missing migration work.
-3. Add an explicit, deterministic `FocusMigrationsV{N}To{N+1}` migration (using the repository's numeric filename convention), and register it chronologically in `FocusMigrations.ALL`. Confirm production still reaches it through `FocusDatabaseProvider.create()` and `.addMigrations(*FocusMigrations.ALL)`.
+2. Increment the database version exactly once from `N` to `N + 1`; do not skip a version to conceal missing migration work.
+3. Add an explicit, deterministic `N -> N+1` migration and register it chronologically in the single migration list. Confirm every production database builder still reaches it through `.addMigrations(...)`.
 4. Prefer a manual migration when data must be renamed, transformed, normalized, deduplicated, split, merged, or backfilled. Use Room auto-migration only when its generated operations exactly preserve the intended contract; use a spec for supported rename/delete cases and test the generated path.
 5. Define the old-to-new mapping before SQL: defaults/backfill, nullability, units, enum/converter compatibility, ID preservation, duplicate policy, indices, foreign keys/cascades, triggers, views, and large-table cost. Migration code is local, synchronous, deterministic, bounded, and independent of network, UI, DI services, asynchronous work, or current account/session state.
 6. Preserve every user-owned row and policy unless the user explicitly approves a documented destructive transformation. Never add `fallbackToDestructiveMigration`, catch an open failure and recreate, drop/recreate a populated table without a proven copy/verification sequence, or convert corrupt/unknown data to fake success.
-7. Export and commit the new `app/schemas/com.ankit.destination.data.FocusDatabase/N+1.json`. Review the generated schema diff against the intended change. Keep all supported origin schemas and the entire contiguous production migration chain.
-8. Update `RoomMigrationMatrixInstrumentedTest` and focused migration tests. Test the direct `N -> N + 1` step and every supported retained/shipped origin -> current chain. Seed representative non-default rows before migration, including null/legacy/boundary values relevant to the change.
+7. Export and commit the new `app/schemas/<database FQCN>/N+1.json`. Review the generated schema diff against the intended change. Keep all supported origin schemas and the entire contiguous production migration chain.
+8. Add or update the migration instrumentation test and focused migration tests. Test the direct `N -> N + 1` step and every supported retained/shipped origin -> current chain. Seed representative non-default rows before migration, including null/legacy/boundary values relevant to the change.
 9. Assert more than successful open: schema identity/version, row counts, field values/backfills, primary/foreign keys, indices, uniqueness, `PRAGMA foreign_key_check`, trigger behavior, converter/enum compatibility, and a post-migration DAO read/write on the affected path.
 10. Test both fresh database creation and upgrade of an existing database. Run the schema-export guard plus connected migration instrumentation on an emulator/device. If no target is available, report migration runtime proof as unverified; compilation or JVM tests alone cannot establish crashless upgrade behavior.
 11. Define downgrade/rollback behavior. Assume an older binary may be unable to open a newer schema; use staged rollout and forward-fix planning where rollback is not schema-safe. Never advertise a rollback as safe without testing it.

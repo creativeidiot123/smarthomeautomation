@@ -1,6 +1,6 @@
 ---
 name: android-security-privacy-identity
-description: "Use for Android security/privacy/identity or trust boundaries: secrets/logs, intents/deep links, PendingIntent, exported components, URIs/WebView, permissions, credentials, Play Integrity, authorization."
+description: "Use for Android security/privacy/identity or trust boundaries: LAN listeners, pairing keys, AES-GCM/crypto, OAuth scopes and token storage, secrets/log redaction, intents/deep links, PendingIntent, exported components/services, URIs/WebView, backups, permissions, credentials, licensing (GPL), authorization."
 ---
 
 # Security, Privacy, Intents, and Identity

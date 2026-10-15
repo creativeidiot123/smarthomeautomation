@@ -1,6 +1,6 @@
 ---
 name: android-gradle-di-release
-description: "Use for Gradle/AGP/Kotlin/KSP/kapt/build/DI/release config: dependencies, catalogs, modules, variants, signing, CI, R8, build failures or upgrades. Not app-architecture redesign."
+description: "Use for Gradle/AGP/Kotlin/KSP/build/DI/release config: dependencies and repositories (JitPack), desugaring, catalogs, modules, variants, signing, GitHub Actions CI, R8, build failures or upgrades. Not app-architecture redesign."
 ---
 
 # Gradle, DI, Modules, and Release

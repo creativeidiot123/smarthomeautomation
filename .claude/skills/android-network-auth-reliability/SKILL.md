@@ -1,6 +1,6 @@
 ---
 name: android-network-auth-reliability
-description: "Use for Retrofit/OkHttp/Ktor/API/auth reliability: DTOs/serialization, contracts, token refresh, retries, idempotency, pagination, timeouts, errors, fake-server tests. Not Room/cache ownership."
+description: "Use for HTTP/API/LAN reliability: HttpURLConnection/Retrofit/OkHttp/Ktor, REST APIs (e.g. YouTube Data API), stream extractors, TCP request/response protocols and wire compatibility, JSON contracts, OAuth token use/refresh, retries, idempotency, pagination, timeouts, unknown outcomes, errors, fake-server tests."
 ---
 
 # Network, Retrofit, Ktor, and Authentication

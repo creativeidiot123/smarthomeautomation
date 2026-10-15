@@ -1,6 +1,6 @@
 ---
 name: android-implementation-patterns
-description: "Use when implementing an already-designed Android/Kotlin pattern: immutable state, lifecycle effects, latest-wins, single-flight, offline transactions, callbackFlow, WorkManager, safe errors. Owners first."
+description: "Use when implementing an already-designed Android/Kotlin pattern: immutable state, lifecycle effects, latest-wins, single-flight, atomic file/store writes, callbackFlow, CoroutineWorker, safe errors and logging; includes this repo's good/bad pairs. Owners first."
 ---
 
 # Reusable Android Patterns
@@ -70,7 +70,7 @@ internal class ExampleViewModel(
                             else ExampleUiState.Content.Data(items)
                         },
                         onFailure = { error ->
-                            FocusLog.w(FocusEventId.EXAMPLE, "refresh failed type=${error::class.simpleName}")
+                            Log.w(TAG, "Refresh failed: " + error.javaClass.simpleName)
                             ExampleUiState.Content.Error(error.toUiText())
                         },
                     )
@@ -81,7 +81,7 @@ internal class ExampleViewModel(
 }
 ```
 
-One guard is enough: `cancel()` + `ensureActive()` stops a stale coroutine from writing state. Add an operation generation counter only when the source is a callback API that keeps delivering after cancellation (see references). The repository produces `Result` with `runCatchingNonCancellation`, so cancellation is never turned into an error. `FocusEventId.EXAMPLE` stands for a real constant from `FocusEventId`. Simple destination selection uses a host navigation callback directly from the UI action instead of an effect stream.
+One guard is enough: `cancel()` + `ensureActive()` stops a stale coroutine from writing state. Add an operation generation counter only when the source is a callback API that keeps delivering after cancellation (see references). The repository produces `Result` with a try/catch that rethrows `CancellationException` first, so cancellation is never turned into an error. `TAG` is one of the existing `HomeDJ*` log tags. Simple destination selection uses a host navigation callback directly from the UI action instead of an effect stream.
 
 ## 3. Compose route: lifecycle-aware state and direct navigation
 
@@ -91,7 +91,7 @@ fun ExampleRoute(
     viewModel: ExampleViewModel,
     onOpenItem: (ItemId) -> Unit,
 ) {
-    val state by viewModel.state.collectAsStateWithLifecycleCompat()
+    val state by viewModel.state.collectAsStateWithLifecycle()
 
     ExampleScreen(
         state = state,
@@ -185,7 +185,7 @@ internal class SearchViewModel(
 
 ## 6. Offline-first local truth and atomic refresh
 
-Destination has no REST API; use this only for a future remote source. The Room transaction part applies to any multi-write local refresh.
+HomeDJ has no Room database; its equivalent is `SavedPlaylistStore` (mutex-serialized, atomic file replace, commit only after the API call succeeds). Use this template only if Room is approved; the commit-after-fetch rule applies to any local refresh.
 
 ```kotlin
 class ItemRepository(
@@ -198,7 +198,7 @@ class ItemRepository(
     fun observeItems(): Flow<List<Item>> =
         itemDao.observeAll().map { entities -> entities.map(ItemEntity::toDomain) }
 
-    suspend fun refresh(): Result<Unit> = runCatchingNonCancellation {
+    suspend fun refresh(): Result<Unit> = resultOf { // try/catch that rethrows CancellationException
         val response = api.getItems()
         database.withTransaction {
             itemDao.replaceAll(response.items.map(ItemDto::toEntity))
@@ -257,49 +257,55 @@ Choose buffering deliberately. `conflate` is valid only when intermediate values
 
 ## 9. Durable idempotent WorkManager work
 
-Destination uses WorkManager's default factory, so a worker takes only `(Context, WorkerParameters)` and resolves dependencies from the composition root. A constructor-injected dependency crashes at runtime. Copy the shape of `PolicyReconcileWorker`:
+HomeDJ uses WorkManager's default factory, so a worker takes only `(Context, WorkerParameters)` and builds its owners from `applicationContext`. A constructor-injected dependency crashes at runtime. Copy the shape of `OfflineAudioWorker`:
 
 ```kotlin
-internal class ExampleWorker(
-    appContext: Context,
-    params: WorkerParameters,
-) : CoroutineWorker(appContext, params) {
-
+class ExampleWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        val app = AppServices.destinationApplicationOrNull(applicationContext)
-            ?: return Result.retry()
-        if (!app.awaitUnlockedStartupReady()) return Result.retry()
         val id = inputData.getString(KEY_ID) ?: return Result.failure()
-
-        return when (app.exampleRepository.process(id)) { // must be idempotent: retries repeat it
-            Outcome.Done, Outcome.AlreadyDone -> Result.success()
-            Outcome.Transient -> if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else Result.failure()
-            Outcome.Permanent -> Result.failure()
+        if (!NativeAudioSource.validId(id)) return Result.success() // permanent: nothing to retry
+        val authorized: suspend () -> Boolean = {
+            ModeStore(applicationContext).mode.first() == HomeDjMode.SERVER // re-checked, never cached
+        }
+        if (!authorized()) return Result.success()
+        return try {
+            exampleOwner.process(applicationContext, id, authorized) // idempotent: retries repeat it
+            Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.w("HomeDJOffline", "Example failed: videoId=" + id + " error=" + failure.javaClass.simpleName)
+            if (runAttemptCount < MAX_ATTEMPTS && authorized()) Result.retry() else Result.failure()
         }
     }
 
     companion object {
-        const val KEY_ID = "id"
-        private const val MAX_ATTEMPTS = 5
+        const val KEY_ID = "videoId"
+        private const val MAX_ATTEMPTS = 2
     }
 }
 ```
 
-Enqueue with `enqueueUniqueWork` keyed by the entity, pass stable IDs rather than payloads, define constraints/backoff, and log the terminal failure with `FocusLog`. Worker retry can repeat after partial completion.
+Enqueue with `enqueueUniqueWork` keyed by the entity (`OfflineAudioLibrary.workName`), pass stable IDs rather than payloads, define constraints/backoff, and log the terminal failure once. Worker class names, unique work names, and input keys are persisted by WorkManager: renaming them strands queued work. Worker retry can repeat after partial completion.
 
 ## 10. Cancellation-safe error mapping
 
-Use the project helper instead of writing a new wrapper:
+HomeDJ has no wrapper helper; use the explicit repository idiom:
 
 ```kotlin
-suspend fun save(rule: AppRule): Result<Unit> =
-    runCatchingNonCancellation { dao.upsert(rule.toEntity()) }
-        .onFailure { error ->
-            FocusLog.e(FocusEventId.EXAMPLE, "save failed pkg=${rule.packageName} type=${error::class.simpleName}", error)
-        }
+suspend fun select(mode: HomeDjMode): Boolean =
+    try {
+        store.select(mode)
+        true
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        Log.e("HomeDJ", "Unable to save selected role: " + failure.javaClass.simpleName)
+        false
+    }
 ```
 
-`runCatchingNonCancellation` rethrows `CancellationException`. Map to a typed failure only where callers branch on it (for example `SQLiteException` -> storage, `SecurityException` -> missing platform permission). Let programming errors surface. Do not return an empty list, `null`, or success for an unknown exception merely to keep the UI running.
+Catch `CancellationException` first and rethrow it; never use `runCatching` around suspend calls. Map to a typed failure only where callers branch on it (for example `IOException` -> storage/network, `SecurityException` -> missing platform permission, `AEADBadTagException` -> wrong pairing key). Let programming errors surface. Do not return an empty list, `null`, or success for an unknown exception merely to keep the UI running.
 
 ## 11. Focused coroutine test
 
@@ -382,9 +388,9 @@ Test oracle:
 
 Do not preserve template types, layers, wrappers, or names that the repository does not need.
 
-## Destination good/bad pairs
+## HomeDJ good/bad pairs
 
-Read [references/destination-good-bad.md](references/destination-good-bad.md) before writing new Kotlin in this repo. It lists the common wrong shapes and the repo-correct replacement.
+Read [references/homedj-good-bad.md](references/homedj-good-bad.md) before writing new Kotlin in this repo. It lists the common wrong shapes and the repo-correct replacement.
 
 ## Additional robust patterns
 

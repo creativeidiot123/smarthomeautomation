@@ -1,6 +1,6 @@
 ---
 name: android-coroutines-flow-work
-description: "Use for coroutines, Flow, callbacks, or background-work issues: cancellation, races, latest-wins, single-flight, serialization, WorkManager, RxJava migration, lifecycle collection."
+description: "Use for coroutines, Flow, callbacks, or background-work issues: cancellation, races, latest-wins, single-flight, Mutex/Semaphore, polling and backoff loops, blocking socket/AudioRecord loops, suspendCancellableCoroutine/callbackFlow, CoroutineWorker/WorkManager unique and periodic work, retries, lifecycle collection."
 ---
 
 # Coroutines, Flow, Background Work, and Rx Migration

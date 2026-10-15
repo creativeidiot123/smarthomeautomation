@@ -27,3 +27,7 @@ Automatic library refresh/worker execution can be deferred or interrupted by And
 The NewPipe Extractor dependency is GPL-3.0-or-later. Its source is not copied; GPL obligations apply to redistribution. No Room schema or migrations.
 
 The opt-in foreground LAN listener returns START_STICKY so Android can try to restore it after process death; role and enabled preferences still gate incoming commands. The Controller ViewModel owns one short-lived request/response poll loop while its screen is composed, observes Wi-Fi availability to immediately reconnect after network changes, polls every six seconds when healthy, and applies capped 1–30-second backoff when unreachable. A peer change resets browser state; reconnection to the same peer refreshes the previous library section. Manual paired private IPv4 remains the address source (no mDNS/parallel transport); only Samsung owns playback. Force-stop and OEM background restrictions can still prevent execution. No persistence/schema change.
+
+## Enforcement
+
+`HomeDjGuardrailTest` (JVM) bans `GlobalScope`, `runBlocking`, `Thread.sleep`, `!!`, raw `collectAsState(` and destructive migration in production Kotlin; keeps `allowBackup`/cleartext off and exported components limited to `HomeDjActivity` and `PlaybackService`; and keeps the agent skill/instruction mirrors identical, parseable and free of foreign-project references.

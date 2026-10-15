@@ -1,6 +1,6 @@
 ---
 name: android-compose-ui-effects
-description: "Use for Jetpack Compose UI implementation or bugs: recomposition, remember/effects, modifiers, Lazy lists, animation, images, previews, performance, View interop. Not for navigation/persistence ownership."
+description: "Use for Jetpack Compose UI implementation or bugs: screens/sections, recomposition, remember/rememberSaveable/effects, DisposableEffect listeners, collectAsStateWithLifecycle, modifiers, Lazy lists, animation, previews, performance, View interop. Not for persistence ownership."
 ---
 
 # Compose UI, Effects, Images, and Performance
@@ -56,7 +56,7 @@ State hoisting:
 
 ## Lifecycle collection
 
-Use `collectAsStateWithLifecycle` for Android state or the repository’s established lifecycle-aware equivalent (Destination: `collectAsStateWithLifecycleCompat()` for state and `CollectLatestWithLifecycle` for effects; raw `collectAsState(` fails `BrutalArchitectureGuardrailTest`). For transient effects, collect in a lifecycle-aware `LaunchedEffect`/host coroutine; do not convert effects to state.
+Use `collectAsStateWithLifecycle` for Android state or the repository’s established lifecycle-aware equivalent (HomeDJ: `collectAsStateWithLifecycle()` from `lifecycle-runtime-compose`; raw `collectAsState(` fails `HomeDjGuardrailTest`). For transient effects, collect in a lifecycle-aware `LaunchedEffect`/host coroutine; do not convert effects to state.
 
 KMP/common UI must use the project’s platform lifecycle bridge; do not import Android lifecycle into commonMain.
 

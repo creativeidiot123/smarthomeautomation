@@ -1,6 +1,6 @@
 # Visual reference library
 
-Destination does **not** vendor the upstream M3 image library. The text references remain local, while
+HomeDJ does **not** vendor the upstream M3 image library. The text references remain local, while
 visual anatomy diagrams, measurements, state grids, do/don't pairs, and complete UI examples stay in
 the source repository.
 
