@@ -1,25 +1,21 @@
 package dev.homedj.app
 
-import android.os.Bundle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class StreamResolutionTest {
     @Test fun invalidOrUntrustedStreamCannotPlay() {
-        assertNull(StreamResolution.playableUrl(null))
-        assertNull(StreamResolution.playableUrl(Bundle().apply {
-            putInt("err", -1); putInt("exitCode", 0); putString("stdout", "https://evilgooglevideo.com/audio")
-        }))
-        assertNull(StreamResolution.playableUrl(Bundle().apply {
-            putInt("err", -1); putInt("exitCode", 1); putString("stdout", "https://r1.googlevideo.com/audio")
-        }))
+        assertNull(StreamResolution.playableUrl(null, 0, -1))
+        assertNull(StreamResolution.playableUrl("https://evilgooglevideo.com/audio", 0, -1))
+        assertNull(StreamResolution.playableUrl("http://r1.googlevideo.com/audio", 0, -1))
+        assertNull(StreamResolution.playableUrl("https://r1.googlevideo.com/audio", 1, -1))
+        assertNull(StreamResolution.playableUrl("https://r1.googlevideo.com/audio", 0, 2))
+        assertNull(StreamResolution.playableUrl("https://r1.googlevideo.com/audio\nhttps://r2.googlevideo.com/audio", 0, -1))
     }
 
-    @Test fun acceptsOneValidHttpsGooglevideoUrl() {
+    @Test fun acceptsOneHttpsGooglevideoAudioUrl() {
         val url = "https://r1.googlevideo.com/videoplayback?id=123"
-        assertEquals(url, StreamResolution.playableUrl(Bundle().apply {
-            putInt("err", -1); putInt("exitCode", 0); putString("stdout", url)
-        }))
+        assertEquals(url, StreamResolution.playableUrl(url, 0, -1))
     }
 }

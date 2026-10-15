@@ -14,3 +14,9 @@
 - No Room database: **Room schema unchanged (not introduced)**.
 - Opt-in foreground `RemoteServerService` (Android connectedDevice service type) accepts AES-256-GCM private-LAN TCP messages on port 47188. A fresh 16-byte challenge authenticates each new connection to prevent replay. `RemoteChannel` owns transport framing; `RemotePrefs` owns the device-local pairing secret and controller endpoint. Controller sends status, play/pause, previous, next, shuffle and stream-volume commands to the existing Media3 session. No discovery, QR, smart-home devices or Internet exposure. Physical network/foreground lifecycle behavior remains unverified.
 - The inherited root AGENTS.md describes a different Android app (Destination) that is not present here. Its broad engineering invariants apply, not its Destination-specific commands.
+
+## Optional automation and streaming milestone
+
+- WorkManager 2.11.2 schedules inexact opt-in playlist refresh on unmetered networks. Google authorization is noninteractive and tokens remain ephemeral.
+- Termux RUN_COMMAND (>=0.109) resolves temporary public YouTube stream URLs using yt-dlp, while the existing Media3 player handles playback. No unofficial InnerTube client or second audio service.
+- Automatically downloaded playlists are explicitly selected by the user. Background yt-dlp command launches are best-effort, not completion tracking. No Room schema changes.

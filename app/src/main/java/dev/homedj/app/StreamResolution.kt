@@ -56,7 +56,7 @@ internal object StreamResolution {
         val issued = saved.getLong("issued", 0)
         if (nonce.isNullOrBlank() || nonce != intent.getStringExtra(EXTRA_REQUEST)) return null
         cancel(context)
-        if (System.currentTimeMillis() - issued !in 0..MAX_AGE) return null
+        if (System.currentTimeMillis() - issued !in 0L..MAX_AGE) return null
         return title
     }
 
@@ -65,10 +65,14 @@ internal object StreamResolution {
     }
 
     /** Fail closed on yt-dlp errors, unexpected schemes and non-YouTube audio hosts. */
-    fun playableUrl(result: Bundle?): String? {
-        if (result == null || result.getInt("err", -1) != -1 ||
-            result.getInt("exitCode", -1) != 0) return null
-        val stdout = result.getString("stdout")?.trim().orEmpty()
+    fun playableUrl(result: Bundle?): String? =
+        if (result == null) null else playableUrl(
+            result.getString("stdout"), result.getInt("exitCode", -1), result.getInt("err", -1),
+        )
+
+    internal fun playableUrl(output: String?, exitCode: Int, internalError: Int): String? {
+        if (internalError != -1 || exitCode != 0) return null
+        val stdout = output?.trim().orEmpty()
         if (stdout.length > 16000 || stdout.lines().size != 1) return null
         val uri = try { URI(stdout) } catch (_: java.net.URISyntaxException) { return null }
         val host = uri.host?.lowercase().orEmpty()
