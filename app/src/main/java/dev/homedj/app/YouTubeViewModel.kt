@@ -73,6 +73,46 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** Imports an accessible public/unlisted playlist into this in-memory browsing session. */
+    fun importPlaylist(link: String) {
+        val id = YouTubePlaylistLinks.idFromLink(link)
+        if (id == null) {
+            authorizationError("Paste a valid YouTube or YouTube Music playlist link.")
+            return
+        }
+        val token = accessToken ?: return
+        playlistJob?.cancel()
+        trackJob?.cancel()
+        mutableState.value = mutableState.value.copy(
+            loadingPlaylists = true, loadingTracks = false, tracks = emptyList(),
+            selectedPlaylistId = null, error = null,
+        )
+        playlistJob = viewModelScope.launch {
+            try {
+                val playlist = repository.playlistById(token, id)
+                if (playlist == null) {
+                    mutableState.value = mutableState.value.copy(
+                        loadingPlaylists = false,
+                        error = "Playlist not found or not accessible to this account.",
+                    )
+                    return@launch
+                }
+                mutableState.value = mutableState.value.copy(
+                    playlists = (listOf(playlist) + mutableState.value.playlists).distinctBy { it.id },
+                    loadingPlaylists = false,
+                )
+                selectPlaylist(playlist.id)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("HomeDJ", "YouTube playlist import failed: " + failure.javaClass.simpleName)
+                mutableState.value = mutableState.value.copy(
+                    loadingPlaylists = false, error = messageFor(failure),
+                )
+            }
+        }
+    }
+
     fun selectPlaylist(id: String) {
         if (mutableState.value.playlists.none { it.id == id }) return
         val token = accessToken ?: return
