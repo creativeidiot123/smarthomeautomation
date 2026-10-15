@@ -110,7 +110,7 @@ class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : Corout
                 return Result.success()
             }
             val saved = SavedPlaylistStore.shared(app).replaceOwned(account, playlists) {
-                config.isCurrent(account)
+                config.isCurrent(account) && it.ownerKey == SavedPlaylistStore.accountKey(account)
             }
             if (!config.isCurrent(account)) return Result.success()
             Log.i("HomeDJAuto", "Playlist metadata refreshed: count=" + saved.playlists.size)

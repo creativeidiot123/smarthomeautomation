@@ -126,7 +126,7 @@ internal class SavedPlaylistStore private constructor(context: Context) {
     /** Reject metadata from a different Google account, including an unscoped legacy snapshot. */
     suspend fun replaceOwned(
         accountName: String, playlists: List<YouTubePlaylist>,
-        allowed: () -> Boolean = { true },
+        allowed: (SavedPlaylistCatalog) -> Boolean = { true },
     ): SavedPlaylistCatalog = mutate(allowed = allowed) { previous ->
         val key = accountKey(accountName)
         val scoped = if (previous.ownerKey == key) previous else SavedPlaylistCatalog()
@@ -134,13 +134,13 @@ internal class SavedPlaylistStore private constructor(context: Context) {
         next.copy(tracks = scoped.tracks.filterKeys { id -> next.playlists.any { it.id == id } })
     }
 
-    suspend fun importPlaylist(playlist: YouTubePlaylist): SavedPlaylistCatalog =
-        mutate { previous ->
+    suspend fun importPlaylist(accountName: String, playlist: YouTubePlaylist): SavedPlaylistCatalog =
+        mutate(allowed = { it.ownerKey == accountKey(accountName) }) { previous ->
             previous.copy(imported = (listOf(playlist) + previous.imported).distinctBy(YouTubePlaylist::id))
         }
 
-    suspend fun storeTracks(id: String, tracks: List<YouTubeTrack>): SavedPlaylistCatalog =
-        mutate { previous ->
+    suspend fun storeTracks(accountName: String, id: String, tracks: List<YouTubeTrack>): SavedPlaylistCatalog =
+        mutate(allowed = { it.ownerKey == accountKey(accountName) }) { previous ->
             if (previous.playlists.none { it.id == id }) previous
             else previous.copy(tracks = previous.tracks + (id to tracks))
         }
@@ -153,12 +153,12 @@ internal class SavedPlaylistStore private constructor(context: Context) {
     }
 
     private suspend fun mutate(
-        allowed: () -> Boolean = { true },
+        allowed: (SavedPlaylistCatalog) -> Boolean = { true },
         change: (SavedPlaylistCatalog) -> SavedPlaylistCatalog,
     ): SavedPlaylistCatalog = withContext(Dispatchers.IO) {
             mutex.withLock {
                 val previous = snapshot()
-                if (!allowed()) return@withLock previous
+                if (!allowed(previous)) return@withLock previous
                 val next = change(previous)
                 val bytes = SavedPlaylistCodec.encode(next).toByteArray(Charsets.UTF_8)
                 if (bytes.size > 4_000_000) throw IOException("Playlist snapshot exceeded storage limit")
