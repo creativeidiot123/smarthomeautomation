@@ -3,7 +3,7 @@ package dev.homedj.app
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import java.net.URI
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -70,9 +70,9 @@ internal object StreamResolution {
             result.getInt("exitCode", -1) != 0) return null
         val stdout = result.getString("stdout")?.trim().orEmpty()
         if (stdout.length > 16000 || stdout.lines().size != 1) return null
-        val uri = Uri.parse(stdout)
+        val uri = try { URI(stdout) } catch (_: java.net.URISyntaxException) { return null }
         val host = uri.host?.lowercase().orEmpty()
-        if (uri.scheme != "https" ||
+        if (uri.scheme != "https" || uri.userInfo != null ||
             !(host == "googlevideo.com" || host.endsWith(".googlevideo.com"))) return null
         return stdout
     }

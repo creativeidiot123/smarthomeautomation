@@ -16,6 +16,7 @@ class SavedPlaylistCodecTest {
                 imported.id to listOf(YouTubeTrack("def", "Guest song")),
             ),
             syncedAt = 123L,
+            ownerKey = "a".repeat(64),
         )
         assertEquals(saved, SavedPlaylistCodec.decode(SavedPlaylistCodec.encode(saved)))
     }
@@ -24,6 +25,11 @@ class SavedPlaylistCodecTest {
         assertThrows(IllegalArgumentException::class.java) {
             SavedPlaylistCodec.decode("""{"version":2,"owned":[]}""")
         }
+    }
+
+    @Test fun oldUnscopedSnapshotHasNoAccountIdentity() {
+        val restored = SavedPlaylistCodec.decode("""{"version":1,"owned":[],"imported":[],"tracks":{}}""")
+        assertEquals(null, restored.ownerKey)
     }
 
     @Test fun omittedPlaylistDoesNotRestoreOrphanTracks() {
