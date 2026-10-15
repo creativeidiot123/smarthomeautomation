@@ -41,7 +41,7 @@ internal object RemoteChannel {
             receive(input, key, challenge)
         }
 
-    fun serve(input: DataInputStream, output: DataOutputStream, key: SecretKeySpec, action: (JSONObject) -> JSONObject) {
+    suspend fun serve(input: DataInputStream, output: DataOutputStream, key: SecretKeySpec, action: suspend (JSONObject) -> JSONObject) {
         val challenge = ByteArray(16).also(random::nextBytes)
         output.write(challenge)
         output.flush()
