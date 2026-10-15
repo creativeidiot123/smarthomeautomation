@@ -49,6 +49,8 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun connect(host: String, code: String) {
+        connection?.cancel()
+        connection = null
         val address = host.trim()
         val key = RemoteChannel.decodeKey(code)
         if (!RemotePrefs.validPrivateIpv4(address) || key == null) {
@@ -57,7 +59,6 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             )
             return
         }
-        connection?.cancel()
         mutableState.value = RemoteUiState(host = address, pairingCode = code.trim())
         connection = viewModelScope.launch {
             while (isActive) {
