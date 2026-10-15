@@ -44,6 +44,7 @@ class HomeDjActivity : ComponentActivity() {
     private val roleModel: RoleViewModel by viewModels()
     private val playback: ServerPlaybackViewModel by viewModels()
     private val youtube: YouTubeViewModel by viewModels()
+    private val remote: RemoteControllerViewModel by viewModels()
     private var authorizationPending = false
     private var revokePending = false
     private var pendingTermuxPlaylist: String? = null
@@ -147,6 +148,15 @@ class HomeDjActivity : ComponentActivity() {
         youtube.authorized(token, result.toGoogleSignInAccount()?.account)
     }
 
+    private fun setRemoteEnabled(enabled: Boolean) {
+        try {
+            RemoteServerService.setEnabled(this, enabled)
+        } catch (failure: Exception) {
+            Log.e("HomeDJRemote", "Could not change remote service state", failure)
+            downloadMessage("Unable to start remote access. Check Android foreground permissions.")
+        }
+    }
+
     private fun downloadMessage(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
@@ -219,6 +229,7 @@ class HomeDjActivity : ComponentActivity() {
                     role.mode == HomeDjMode.SERVER -> {
                         DisposableEffect(playback, youtube) {
                             playback.connect()
+                            if (RemotePrefs(this@HomeDjActivity).enabled) setRemoteEnabled(true)
                             onDispose {
                                 playback.disconnect()
                                 youtube.clear()
@@ -226,9 +237,14 @@ class HomeDjActivity : ComponentActivity() {
                         }
                         val status by playback.status.collectAsStateWithLifecycle()
                         val youtubeState by youtube.state.collectAsStateWithLifecycle()
+                        val remoteRunning by RemoteServerService.running.collectAsStateWithLifecycle()
                         ServerScreen(
                             status = status,
                             youtubeState = youtubeState,
+                            remoteRunning = remoteRunning,
+                            remoteAddress = RemotePrefs.localAddress(),
+                            remotePairingCode = RemotePrefs(this@HomeDjActivity).serverKey(),
+                            onRemoteToggle = ::setRemoteEnabled,
                             changing = role.changing,
                             onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
                             onPlayPause = playback::playOrPause,
@@ -243,10 +259,20 @@ class HomeDjActivity : ComponentActivity() {
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
                         )
                     }
-                    role.mode == HomeDjMode.CONTROLLER -> ControllerScreen(
-                        changing = role.changing,
-                        onSwitch = { roleModel.select(HomeDjMode.SERVER) },
-                    )
+                    role.mode == HomeDjMode.CONTROLLER -> {
+                        DisposableEffect(remote) {
+                            remote.start()
+                            onDispose { remote.stop() }
+                        }
+                        val remoteState by remote.state.collectAsStateWithLifecycle()
+                        RemoteControllerScreen(
+                            changing = role.changing,
+                            state = remoteState,
+                            onConnect = remote::connect,
+                            onCommand = remote::command,
+                            onSwitch = { roleModel.select(HomeDjMode.SERVER) },
+                        )
+                    }
                     else -> RolePicker(
                         changing = role.changing,
                         onServer = { roleModel.select(HomeDjMode.SERVER) },
@@ -263,7 +289,7 @@ class HomeDjActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ScreenFrame(content: @Composable () -> Unit) {
+internal fun ScreenFrame(content: @Composable () -> Unit) {
     Scaffold { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp)
@@ -308,6 +334,10 @@ private fun RolePicker(changing: Boolean, onServer: () -> Unit, onController: ()
 private fun ServerScreen(
     status: ServerPlaybackUiState,
     youtubeState: YouTubeUiState,
+    remoteRunning: Boolean,
+    remoteAddress: String,
+    remotePairingCode: String,
+    onRemoteToggle: (Boolean) -> Unit,
     changing: Boolean,
     onPickAudio: () -> Unit,
     onPlayPause: () -> Unit,
@@ -361,25 +391,14 @@ private fun ServerScreen(
             onImportPlaylist = onImportPlaylist,
             onDownloadPlaylist = onDownloadPlaylist,
         )
-        Text("Local playback works without YouTube. Remote Wi-Fi control is not enabled yet.")
+        RemoteServerSection(
+            running = remoteRunning,
+            ip = remoteAddress,
+            code = remotePairingCode,
+            onToggle = onRemoteToggle,
+        )
+        Text("Local playback works without YouTube. Remote access is opt-in.")
         TextButton(onClick = onSwitch, enabled = !changing) { Text("Switch to Controller mode") }
     }
 }
 
-@Composable
-private fun ControllerScreen(changing: Boolean, onSwitch: () -> Unit) {
-    ScreenFrame {
-        Text("Controller mode", style = MaterialTheme.typography.titleLarge)
-        ElevatedCard {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Not paired", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "This phone will control HomeDJ Server over Wi-Fi after authenticated " +
-                        "discovery and QR pairing are implemented. Remote commands are disabled for now."
-                )
-            }
-        }
-        Text("Music plays on the Samsung, not on this phone.")
-        TextButton(onClick = onSwitch, enabled = !changing) { Text("Switch to Server mode") }
-    }
-}
