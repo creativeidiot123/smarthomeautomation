@@ -241,23 +241,12 @@ class HomeDjActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    private fun playSavedHomeDjAudio() {
-        if (roleModel.state.value.mode != HomeDjMode.SERVER) return
-        lifecycleScope.launch {
-            val audio = OfflineAudioLibrary.savedSongs(this@HomeDjActivity)
-            if (roleModel.state.value.mode != HomeDjMode.SERVER) return@launch
-            if (audio.isEmpty()) downloadMessage("No native offline songs saved yet.")
-            else playback.playPickedAudio(audio)
-        }
-    }
-
     /** Queues the shown playlist from the tapped song, so next and previous move through it. */
     private fun playYouTubeTrack(playlist: List<YouTubeTrack>, track: YouTubeTrack) {
         if (roleModel.state.value.mode != HomeDjMode.SERVER) return
         val queue = playlistQueue(playlist, track.id) ?: return
         // PlaybackService resolves each stream when its item loads; failures surface as player errors.
-        playback.playPickedAudio(
-            queue.tracks.map { LocalAudio(HomeDjMediaResolver.trackUri(it.id), it.title) }, queue.start)
+        playback.playTracks(queue.tracks, queue.start)
     }
 
     private fun disconnectYouTube() {
@@ -326,20 +315,25 @@ class HomeDjActivity : ComponentActivity() {
                             onRemoteToggle = ::setRemoteEnabled,
                             changing = role.changing,
                             onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
-                            onPlayDownloads = ::playSavedHomeDjAudio,
                             onPlaySharedDownloads = ::requestDownloadedAudio,
                             onPlayPause = playback::playOrPause,
                             onNext = playback::next,
                             onPrevious = playback::previous,
                             onShuffle = playback::toggleShuffle,
+                            onSeek = playback::seekTo,
                             onConnectYouTube = { requestYouTubeAccess(interactive = true) },
                             onDisconnectYouTube = ::disconnectYouTube,
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
                             onDownloadPlaylist = youtube::downloadPlaylistLink,
                             onStreamTrack = { playYouTubeTrack(youtubeState.tracks, it) },
+                            onPlayTracks = { tracks, start ->
+                                tracks.getOrNull(start)?.let { playYouTubeTrack(tracks, it) }
+                            },
                             onDownloadTrack = youtube::saveTrackOffline,
                             onDownloadSelected = youtube::saveSelectedOffline,
+                            onCancelSaves = youtube::cancelSaves,
+                            onRemoveDownloads = youtube::removeDownloads,
                             onAutoEnabled = youtube::setAutoEnabled,
                             onToggleAutoPlaylist = youtube::toggleAutoPlaylist,
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
@@ -374,6 +368,8 @@ class HomeDjActivity : ComponentActivity() {
                             onStopCast = { LiveAudioCastService.stop(this@HomeDjActivity) },
                             onConnect = remote::connect,
                             onCommand = remote::command,
+                            onSeek = remote::seek,
+                            onDownloadChange = remote::changeDownload,
                             onBrowsePlaylists = remote::browsePlaylists,
                             onBrowseDownloads = remote::browseDownloads,
                             onBrowseTracks = remote::browseTracks,

@@ -1,11 +1,9 @@
 package dev.homedj.app
 
 import android.text.format.DateFormat
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,11 +12,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -111,11 +107,13 @@ internal fun RemoteControllerScreen(
     onStopCast: () -> Unit,
     onConnect: (String, String) -> Unit,
     onCommand: (String, Int?) -> Unit,
+    onSeek: (Long) -> Unit,
     onBrowsePlaylists: () -> Unit,
     onBrowseDownloads: () -> Unit,
     onBrowseTracks: (String) -> Unit,
     onLoadMore: () -> Unit,
     onLibraryAction: (String, String) -> Unit,
+    onDownloadChange: (remove: Boolean, kind: String, id: String) -> Unit,
     onImportLink: (String) -> Unit,
     onBreaks: (MusicBreakSettings) -> Unit,
     onSwitch: () -> Unit,
@@ -123,13 +121,10 @@ internal fun RemoteControllerScreen(
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var host by remember { mutableStateOf(state.host) }
     var code by remember { mutableStateOf(state.pairingCode) }
-    var playlistLink by rememberSaveable { mutableStateOf("") }
-    var showLink by rememberSaveable { mutableStateOf(false) }
-    var menuFor by rememberSaveable { mutableStateOf<String?>(null) }
     // Samsung's status carries no song ID, so the player shows placeholder art on this phone.
     val nowPlaying = NowPlayingUi(
         title = state.title,
-        subtitle = if (state.casting) "Live audio from this phone" else "Playing on Samsung",
+        artist = state.artist.ifBlank { if (state.casting) "Live audio from this phone" else "Playing on Samsung" },
         artworkUrl = null,
         hasTrack = state.hasTrack,
         playing = state.playing,
@@ -138,13 +133,18 @@ internal fun RemoteControllerScreen(
         canNext = state.connected && state.hasTrack,
         shuffle = state.shuffle,
         canShuffle = state.connected && state.queueSize > 1 && !state.casting,
+        positionMs = state.positionMs,
+        durationMs = if (state.casting) -1L else state.durationMs,
+        positionAt = state.positionAt,
+        canSeek = state.connected && state.hasTrack && !state.casting,
     )
-    val actions = remember(onCommand) {
+    val actions = remember(onCommand, onSeek) {
         PlayerActions(
             playPause = { onCommand("playPause", null) },
             next = { onCommand("next", null) },
             previous = { onCommand("previous", null) },
             shuffle = { onCommand("shuffle", null) },
+            seek = onSeek,
         )
     }
     MusicShell(
@@ -154,6 +154,9 @@ internal fun RemoteControllerScreen(
         nowPlaying = nowPlaying,
         actions = actions,
         playerExtra = { SamsungVolume(state, onCommand) },
+        refreshing = state.browserLoading,
+        onRefresh = if (tab == HomeDjPage.HOME.ordinal && state.browserMode == "catalog" && state.connected)
+            onBrowsePlaylists else null,
     ) {
         if (!state.connected) {
             Card(
@@ -166,13 +169,23 @@ internal fun RemoteControllerScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Connect to hear music", style = MaterialTheme.typography.titleMedium)
                     Text("Start remote control on Samsung, then enter its Wi-Fi address and pairing code.")
-                    Button(onClick = { tab = HomeDjPage.SETUP.ordinal }) { Text("Open setup") }
+                    Button(onClick = { tab = HomeDjPage.SETTINGS.ordinal }) { Text("Open settings") }
                 }
             }
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         when (tab) {
-            0 -> {
+            0 -> ControllerLibrary(
+                state = state,
+                onBrowsePlaylists = onBrowsePlaylists,
+                onBrowseDownloads = onBrowseDownloads,
+                onBrowseTracks = onBrowseTracks,
+                onLoadMore = onLoadMore,
+                onLibraryAction = onLibraryAction,
+                onDownloadChange = onDownloadChange,
+                onImportLink = onImportLink,
+            )
+            1 -> {
                 SectionTitle("Samsung volume")
                 SamsungVolume(state, onCommand)
                 SectionTitle("Cast OnePlus audio")
@@ -205,117 +218,6 @@ internal fun RemoteControllerScreen(
                     state.activity?.let { ActivityFeedCard(it) }
                 }
             }
-            1 -> {
-                val inPlaylists = state.browserMode == "catalog" || state.browserMode == "tracks"
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = inPlaylists, onClick = onBrowsePlaylists, enabled = state.connected,
-                        label = { Text("Playlists") })
-                    FilterChip(selected = !inPlaylists, onClick = onBrowseDownloads, enabled = state.connected,
-                        label = { Text("Offline songs") })
-                    Spacer(Modifier.weight(1f))
-                    if (state.browserMode == "catalog") {
-                        IconButton(onClick = { showLink = !showLink }, enabled = state.connected) {
-                            Icon(painterResource(R.drawable.ic_add),
-                                contentDescription = if (showLink) "Hide playlist link" else "Add playlist by link")
-                        }
-                    }
-                }
-                if (state.browserLoading) Text("Loading music…")
-                when (state.browserMode) {
-                    "catalog" -> {
-                        if (showLink) {
-                            OutlinedTextField(value = playlistLink,
-                                onValueChange = { if (it.length <= 2048) playlistLink = it },
-                                label = { Text("Add a YouTube playlist link") }, singleLine = true,
-                                enabled = state.connected, modifier = Modifier.fillMaxWidth())
-                            OutlinedButton(onClick = { onImportLink(playlistLink) },
-                                enabled = state.connected && playlistLink.isNotBlank() && !state.importingLink) {
-                                Text(if (state.importingLink) "Adding on Samsung…" else "Add to Samsung")
-                            }
-                        }
-                        if (!state.browserLoading && state.playlists.isEmpty()) {
-                            Text("No saved playlists yet. Add a playlist link or sync YouTube on Samsung.")
-                        }
-                        AdaptiveGrid(state.playlists) { playlist, modifier ->
-                            PlaylistTile(playlist.title, "${playlist.count} songs",
-                                onClick = { onBrowseTracks(playlist.id) }, modifier = modifier,
-                                enabled = state.connected)
-                        }
-                    }
-                    else -> {
-                        if (state.browserMode == "tracks") {
-                            BackHandler(enabled = state.connected) { onBrowsePlaylists() }
-                            IconButton(onClick = onBrowsePlaylists, enabled = state.connected) {
-                                Icon(painterResource(R.drawable.ic_arrow_back), contentDescription = "All playlists")
-                            }
-                            PlaylistHeader(
-                                title = state.selectedPlaylistTitle,
-                                subtitle = "${state.browserTotal} songs",
-                                artworkUrl = state.songs.firstOrNull()?.id?.let(::youTubeArtworkUrl),
-                            ) {
-                                state.selectedPlaylistId?.let { playlistId ->
-                                    Button(onClick = { onLibraryAction("playPlaylist", playlistId) },
-                                        enabled = state.connected, modifier = Modifier.weight(1f)) {
-                                        IconLabel(R.drawable.ic_play, "Play")
-                                    }
-                                    OutlinedButton(onClick = { onLibraryAction("savePlaylist", playlistId) },
-                                        enabled = state.connected, modifier = Modifier.weight(1f)) {
-                                        IconLabel(R.drawable.ic_download, "Save offline")
-                                    }
-                                }
-                            }
-                        }
-                        if (!state.browserLoading && state.songs.isEmpty()) {
-                            Text("No songs found here.")
-                        }
-                        Column {
-                            state.songs.forEach { song ->
-                                SongRow(
-                                    title = song.title,
-                                    artworkUrl = youTubeArtworkUrl(song.id),
-                                    onClick = { onLibraryAction("playTrack", song.id) },
-                                    subtitle = when {
-                                        song.saved -> "Saved on Samsung"
-                                        song.saving -> "Saving…"
-                                        else -> null
-                                    },
-                                    saved = song.saved,
-                                    enabled = state.connected,
-                                    onMenu = { menuFor = song.id },
-                                )
-                            }
-                        }
-                        state.songs.firstOrNull { it.id == menuFor }?.let { song ->
-                            SongMenuSheet(
-                                title = song.title,
-                                artworkUrl = youTubeArtworkUrl(song.id),
-                                actions = buildList {
-                                    add(SongMenuAction(if (song.saved) "Play offline" else "Play", R.drawable.ic_play) {
-                                        onLibraryAction("playTrack", song.id)
-                                    })
-                                    if (!song.saved && !song.saving) {
-                                        add(SongMenuAction("Save offline", R.drawable.ic_download) {
-                                            onLibraryAction("saveTrack", song.id)
-                                        })
-                                    }
-                                },
-                                onDismiss = { menuFor = null },
-                            )
-                        }
-                    }
-                }
-                val loaded = if (state.browserMode == "catalog") state.playlists.size else state.songs.size
-                if (loaded < state.browserTotal) {
-                    OutlinedButton(onClick = onLoadMore,
-                        enabled = state.connected && !state.browserLoading) {
-                        Text("Show more (${loaded}/${state.browserTotal})")
-                    }
-                }
-                state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-                Text("Online songs need Samsung's internet connection.",
-                    style = MaterialTheme.typography.bodySmall)
-            }
             2 -> {
                 Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.fillMaxWidth().padding(20.dp),
@@ -340,7 +242,7 @@ internal fun RemoteControllerScreen(
                             enabled = !changing && host.isNotBlank() && code.isNotBlank()) {
                             Text(if (state.connected) "Reconnect" else "Connect")
                         }
-                        Text("Find both values in Samsung → Setup. Both phones must be on the same Wi-Fi.",
+                        Text("Find both values in Samsung → Settings. Both phones must be on the same Wi-Fi.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }

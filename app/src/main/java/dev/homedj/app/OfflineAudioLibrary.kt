@@ -55,22 +55,69 @@ internal object OfflineAudioLibrary {
     fun localMedia(context: Context, track: YouTubeTrack): LocalAudio? =
         existing(context, track.id)?.let { LocalAudio(Uri.fromFile(it), track.title) }
 
-    fun allLocalMedia(context: Context, titles: Map<String, String> = emptyMap()): List<LocalAudio> =
-        directory(context).listFiles().orEmpty()
-            .filter { it.isFile && it.length() > 0 && extensions.contains(it.extension) &&
-                NativeAudioSource.validId(it.nameWithoutExtension) }
-            .sortedBy { it.name }
-            .map { LocalAudio(Uri.fromFile(it), offlineTitle(it.nameWithoutExtension, titles)) }
-
-    /** Saved songs named from the playlist catalog, so a queue shows song titles, not video IDs. */
-    suspend fun savedSongs(context: Context): List<LocalAudio> {
-        val titles = SavedPlaylistStore.shared(context).read().titles()
-        return withContext(Dispatchers.IO) { allLocalMedia(context, titles) }
+    /**
+     * Every downloaded song, newest first, with the details saved beside it, else the catalog's,
+     * so queues and the Downloaded view show titles rather than video IDs.
+     */
+    suspend fun savedTracks(context: Context): List<YouTubeTrack> {
+        val catalog = SavedPlaylistStore.shared(context).read().songs()
+        return withContext(Dispatchers.IO) {
+            directory(context).listFiles().orEmpty()
+                .filter { it.isFile && it.length() > 0 && extensions.contains(it.extension) &&
+                    NativeAudioSource.validId(it.nameWithoutExtension) }
+                .sortedByDescending { it.lastModified() }
+                .map { file ->
+                    val id = file.nameWithoutExtension
+                    offlineTrack(id, OfflineSongInfo.read(context, id), catalog)
+                }
+        }
     }
 
-    /** A song no saved playlist lists any more keeps its video ID as its name. */
-    internal fun offlineTitle(videoId: String, titles: Map<String, String>): String =
-        titles[videoId] ?: videoId
+    /** Saved details win; a song no saved playlist lists any more keeps its video ID as its name. */
+    internal fun offlineTrack(videoId: String, saved: YouTubeTrack?, catalog: Map<String, YouTubeTrack>): YouTubeTrack =
+        saved ?: catalog[videoId] ?: YouTubeTrack(videoId, videoId)
+
+    /**
+     * Stops queued or running saves of these songs, manual and automatic. A running worker drops its
+     * partial file; automatic saves come back on the next sync while their playlist stays opted in.
+     */
+    fun cancel(context: Context, ids: Collection<String>) {
+        val work = WorkManager.getInstance(context.applicationContext)
+        ids.filter(NativeAudioSource::validId).forEach { id ->
+            work.cancelUniqueWork(workName(id, automatic = false))
+            work.cancelUniqueWork(workName(id, automatic = true))
+        }
+    }
+
+    /** Removing a playlist's download also stops auto-save from downloading it again on the next sync. */
+    suspend fun removePlaylist(context: Context, playlistId: String, ids: Collection<String>): Int {
+        val auto = AutoLibraryConfig(context)
+        if (playlistId in auto.playlistIds) auto.togglePlaylist(playlistId)
+        return remove(context, ids)
+    }
+
+    /**
+     * Explicit user removal: cancels pending saves, then deletes audio, partials, details and art.
+     * Holding [commitMutex] keeps a finishing save from committing a file in the middle of it.
+     * Returns how many songs had a downloaded file.
+     */
+    suspend fun remove(context: Context, ids: Collection<String>): Int {
+        val valid = ids.filter(NativeAudioSource::validId).toSet()
+        cancel(context, valid)
+        return withContext(Dispatchers.IO) {
+            commitMutex.withLock {
+                valid.count { id ->
+                    val file = existing(context, id)
+                    file?.delete()
+                    extensions.forEach { File(directory(context), "$id.$it").delete() }
+                    discardPartials(context, id, automatic = false)
+                    discardPartials(context, id, automatic = true)
+                    OfflineSongInfo.delete(context, id)
+                    file != null
+                }
+            }
+        }
+    }
 
     internal fun networkForDownload(accountKey: String?, playlistId: String?): NetworkType =
         if (accountKey != null && playlistId != null) NetworkType.UNMETERED else NetworkType.CONNECTED
@@ -101,10 +148,14 @@ internal object OfflineAudioLibrary {
         playlistId: String? = null,
     ) {
         require(NativeAudioSource.validId(track.id)) { "Invalid video ID" }
+        // Song details are optional input: work queued by older builds lacks them and uses the catalog.
         val params = Data.Builder()
             .putString("videoId", track.id)
             .putString("accountKey", accountKey)
             .putString("playlistId", playlistId)
+            .putString("title", track.title.take(300))
+            .putString("artist", track.artist.take(200))
+            .putInt("duration", track.durationSeconds)
             .build()
         val automatic = accountKey != null && playlistId != null
         val request = OneTimeWorkRequestBuilder<OfflineAudioWorker>()
@@ -166,6 +217,8 @@ internal object OfflineAudioLibrary {
                 }
                 coroutineContext.ensureActive()
                 commitMutex.withLock {
+                    // A removal may have cancelled this save while it waited for the lock.
+                    coroutineContext.ensureActive()
                     if (!authorized()) throw DownloadRejected("Download no longer authorized")
                     val committedBytes = folder.listFiles().orEmpty()
                         .filter { it.isFile && it.extension in extensions }
@@ -211,8 +264,20 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
         return try {
             val file = OfflineAudioLibrary.download(applicationContext, id, automatic, authorized)
             Log.i("HomeDJOffline", "Download ready: videoId=" + id + " bytes=" + file.length())
+            val track = inputData.getString("title")?.takeIf { it.isNotBlank() }
+                ?.let { YouTubeTrack(id, it, inputData.getString("artist").orEmpty(), inputData.getInt("duration", 0)) }
+                ?: SavedPlaylistStore.shared(applicationContext).read().songs()[id]
+                ?: YouTubeTrack(id, id)
+            withContext(Dispatchers.IO) {
+                OfflineSongInfo.save(applicationContext, track)
+                OfflineSongInfo.saveArt(applicationContext, id)
+            }
             Result.success()
         } catch (cancelled: CancellationException) {
+            // Cancelled by the user (cancel or remove download): the partial would never be resumed.
+            if (stopReason == WorkInfo.STOP_REASON_CANCELLED_BY_APP) {
+                OfflineAudioLibrary.discardPartials(applicationContext, id, automatic)
+            }
             throw cancelled
         } catch (failure: Exception) {
             Log.w("HomeDJOffline", "Audio download failed: videoId=" + id +

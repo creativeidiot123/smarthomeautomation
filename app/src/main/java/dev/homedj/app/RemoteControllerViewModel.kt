@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -24,8 +25,15 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
-data class RemotePlaylist(val id: String, val title: String, val count: Int)
-data class RemoteSong(val id: String, val title: String, val saved: Boolean, val saving: Boolean = false)
+data class RemotePlaylist(val id: String, val title: String, val count: Int, val artworkUrl: String = "")
+data class RemoteSong(
+    val id: String,
+    val title: String,
+    val saved: Boolean,
+    val saving: Boolean = false,
+    val artist: String = "",
+    val durationSeconds: Int = 0,
+)
 
 data class RemoteUiState(
     val host: String = "",
@@ -58,6 +66,14 @@ data class RemoteUiState(
     val libraryRevision: Long? = null,
     /** Index of the song shown, sent with skips so a stale tap cannot skip twice; -1 if unknown. */
     val trackIndex: Int = -1,
+    val artist: String = "",
+    /** Samsung's song position when [positionAt] (`elapsedRealtime`) was read; -1 duration on older builds. */
+    val positionMs: Long = 0L,
+    val durationMs: Long = -1L,
+    val positionAt: Long = 0L,
+    /** Whole-playlist counts from Samsung for the shown playlist; -1 when an older Samsung omits them. */
+    val savedCount: Int = -1,
+    val savingCount: Int = 0,
 )
 
 class RemoteControllerViewModel(application: Application) : AndroidViewModel(application) {
@@ -157,14 +173,14 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
 
     fun setBreaks(settings: MusicBreakSettings) = command("setBreaks", breaks = settings)
 
-    fun command(action: String, percent: Int? = null, breaks: MusicBreakSettings? = null) {
+    fun command(action: String, percent: Int? = null, breaks: MusicBreakSettings? = null, position: Long? = null) {
         val current = mutableState.value
         val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
         if (!current.connected) return
         val version = generation
         viewModelScope.launch {
             try {
-                val response = exchange(current.host, key, commandRequest(action, current, percent, breaks))
+                val response = exchange(current.host, key, commandRequest(action, current, percent, breaks, position))
                 if (version != generation) return@launch
                 if (response.optBoolean("ok")) {
                     show(response)
@@ -231,13 +247,16 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                 if (values != null) for (index in 0 until values.length()) {
                     val item = values.optJSONObject(index) ?: continue
                     if (mode == "catalog") playlists.add(RemotePlaylist(
-                        item.optString("id"), item.optString("title"), item.optInt("count")
+                        item.optString("id"), item.optString("title"), item.optInt("count"),
+                        youTubeImageUrl(item.optString("art")).orEmpty(),
                     ))
                     else songs.add(remoteSong(item))
                 }
                 val previous = mutableState.value
                 mutableState.value = previous.copy(
                     browserLoading = false, browserTotal = response.optInt("total", 0),
+                    savedCount = if (mode == "tracks") response.optInt("savedCount", -1) else -1,
+                    savingCount = if (mode == "tracks") response.optInt("savingCount", 0) else 0,
                     playlists = if (mode == "catalog")
                         (if (offset == 0) emptyList() else previous.playlists) + playlists
                         else previous.playlists,
@@ -258,7 +277,13 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    fun libraryAction(action: String, id: String) {
+    fun seek(positionMs: Long) = command("seek", position = positionMs)
+
+    /** Stops (`remove` false) or deletes Samsung's download of one song or the shown playlist. */
+    fun changeDownload(remove: Boolean, kind: String, id: String) =
+        libraryAction(if (remove) "removeSaved" else "cancelSave", id, kind)
+
+    fun libraryAction(action: String, id: String, kind: String? = null) {
         val current = mutableState.value
         val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
         if (!current.connected) return
@@ -266,18 +291,19 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         viewModelScope.launch {
             try {
                 val request = JSONObject().put("command", action).put("id", id)
+                if (kind != null) request.put("kind", kind)
                 // Optional field: Samsung queues the shown playlist from this song; older builds ignore it.
                 if (action == "playTrack" && current.browserMode == "tracks") {
                     current.selectedPlaylistId?.let { request.put("playlist", it) }
                 }
                 val response = exchange(current.host, key, request)
                 if (version != generation) return@launch
-                if (response.optBoolean("ok")) mutableState.update { it.withSavesQueued(action, id) }
+                if (response.optBoolean("ok")) mutableState.update { it.withSavesQueued(action, id, kind) }
                 mutableState.value = mutableState.value.copy(
                     notice = if (response.optBoolean("ok"))
                         response.optString("message", "Command accepted") else null,
                     error = if (response.optBoolean("ok")) null
-                        else response.optString("error", "Command rejected"),
+                        else downloadChangeError(action, response.optString("error", "Command rejected")),
                 )
             } catch (failure: CancellationException) {
                 throw failure
@@ -344,6 +370,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         val last = current.songs.indexOfLast { it.saving }
         val requestVersion = browseVersion
         val fresh = HashMap<String, RemoteSong>()
+        var counts: Pair<Int, Int>? = null
         var offset = first
         while (offset <= last) {
             val response = exchange(host, key, "tracks", id = playlist, offset = offset)
@@ -352,10 +379,14 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             for (index in 0 until items.length()) {
                 items.optJSONObject(index)?.let(::remoteSong)?.let { fresh[it.id] = it }
             }
+            counts = response.optInt("savedCount", -1) to response.optInt("savingCount", 0)
             offset += items.length()
         }
         if (requestVersion != browseVersion || fresh.isEmpty()) return
-        mutableState.update { state -> state.copy(songs = state.songs.map { fresh[it.id] ?: it }) }
+        mutableState.update { state ->
+            state.copy(songs = state.songs.map { fresh[it.id] ?: it },
+                savedCount = counts?.first ?: state.savedCount, savingCount = counts?.second ?: state.savingCount)
+        }
     }
 
     private suspend fun exchange(
@@ -389,6 +420,10 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             activity = RemoteActivity.fromJson(response.optJSONArray("activity"), System.currentTimeMillis()),
             libraryRevision = library,
             trackIndex = response.optInt("index", -1),
+            artist = response.optString("artist").take(200),
+            positionMs = response.optLong("position", 0L).coerceAtLeast(0),
+            durationMs = response.optLong("duration", -1L).takeIf { it > 0 } ?: -1L,
+            positionAt = SystemClock.elapsedRealtime(),
         )
         // A playlist added on either phone shows up here without a manual refresh.
         if (libraryChanged(previous.libraryRevision, library) && previous.browserMode == "catalog" &&
@@ -426,18 +461,6 @@ internal fun importLinkError(error: String): String = when (error) {
 internal fun showsDisconnected(consecutiveFailures: Int, connected: Boolean): Boolean =
     !connected || consecutiveFailures >= 2
 
-internal fun remoteSong(item: JSONObject): RemoteSong =
-    RemoteSong(item.optString("id"), item.optString("title"), item.optBoolean("saved"), item.optBoolean("saving"))
-
-/** Songs Samsung just accepted for saving show "Saving…" until a refresh reports them saved. */
-internal fun RemoteUiState.withSavesQueued(action: String, id: String): RemoteUiState = when {
-    action == "saveTrack" ->
-        copy(songs = songs.map { if (it.id == id && !it.saved) it.copy(saving = true) else it })
-    action == "savePlaylist" && browserMode == "tracks" && selectedPlaylistId == id ->
-        copy(songs = songs.map { if (it.saved) it else it.copy(saving = true) })
-    else -> this
-}
-
 /** Reconnecting keeps what is already loaded; only an empty or interrupted section is fetched again. */
 internal fun RemoteUiState.needsBrowse(): Boolean =
     if (browserMode == "catalog") playlists.isEmpty() else songs.isEmpty()
@@ -460,13 +483,15 @@ internal fun libraryChanged(previous: Long?, next: Long?): Boolean =
  */
 internal fun commandRequest(
     action: String, shown: RemoteUiState, percent: Int? = null, breaks: MusicBreakSettings? = null,
+    position: Long? = null,
 ): JSONObject {
     val request = JSONObject().put("command", action)
     when (action) {
         "playPause" -> request.put("play", !shown.playing)
         "shuffle" -> request.put("on", !shown.shuffle)
-        "next", "previous" -> if (shown.trackIndex >= 0) request.put("index", shown.trackIndex)
+        "next", "previous", "seek" -> if (shown.trackIndex >= 0) request.put("index", shown.trackIndex)
     }
+    if (position != null) request.put("position", position)
     if (percent != null) request.put("percent", percent)
     if (breaks != null) request.put("breaks", breaks.toJson())
     return request

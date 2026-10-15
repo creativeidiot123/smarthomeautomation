@@ -61,11 +61,14 @@ internal fun ScheduleStatusCard(status: ServerPlaybackUiState, hasSlots: Boolean
 
 @Composable
 internal fun UpNextSection(upNext: List<QueueEntry>, onJump: (Int) -> Unit) {
-    if (upNext.isEmpty()) return
     SectionTitle("Up next")
+    if (upNext.isEmpty()) {
+        Text("Nothing after this song.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
     Column {
         upNext.forEach { entry ->
-            SongRow(entry.title, entry.artworkUrl, onClick = { onJump(entry.index) })
+            SongRow(entry.title, entry.artist, entry.artworkUrl, onClick = { onJump(entry.index) })
         }
     }
 }

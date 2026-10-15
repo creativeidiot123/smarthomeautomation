@@ -35,6 +35,17 @@ private const val LARGE_ART = "/maxresdefault.jpg"
 internal fun youTubeArtworkUrl(id: String): String? =
     if (NativeAudioSource.validId(id)) ART_HOST + id + SMALL_ART else null
 
+/**
+ * A cover URL from YouTube or the LAN, kept only when it is HTTPS on YouTube's image host, so no
+ * other address is ever stored, sent to the OnePlus, or fetched. Null otherwise.
+ */
+internal fun youTubeImageUrl(value: String?): String? {
+    val url = value?.trim()?.takeIf { it.length <= 1_000 } ?: return null
+    val host = runCatching { java.net.URI(url) }.getOrNull()?.takeIf { it.scheme == "https" && it.userInfo == null }
+        ?.host?.lowercase(java.util.Locale.ROOT) ?: return null
+    return url.takeIf { host == "i.ytimg.com" || host.endsWith(".ytimg.com") }
+}
+
 /** The high-resolution variant for the full-screen player; not every video has one. */
 internal fun largeArtworkUrl(url: String): String =
     if (url.startsWith(ART_HOST) && url.endsWith(SMALL_ART)) url.removeSuffix(SMALL_ART) + LARGE_ART else url

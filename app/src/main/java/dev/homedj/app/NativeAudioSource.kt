@@ -200,10 +200,12 @@ internal object NativeAudioSource {
             }
             val tracks = items.mapNotNull { item ->
                 val songId = idFromWatchUrl(item.url ?: "") ?: return@mapNotNull null
-                YouTubeTrack(songId, (item.name ?: "").ifBlank { songId }.take(300))
+                YouTubeTrack(songId, (item.name ?: "").ifBlank { songId }.take(300),
+                    cleanArtist(item.uploaderName), item.duration.coerceIn(0L, MAX_TRACK_SECONDS.toLong()).toInt())
             }.distinctBy(YouTubeTrack::id).take(MAX_LINKED_TRACKS)
             val title = (info.name ?: "").ifBlank { "YouTube playlist" }.take(300)
-            LinkedPlaylist(YouTubePlaylist(id, title, tracks.size), tracks)
+            val cover = info.thumbnails.orEmpty().mapNotNull { youTubeImageUrl(it.url) }.lastOrNull()
+            LinkedPlaylist(YouTubePlaylist(id, title, tracks.size, cover.orEmpty()), tracks)
         } catch (gone: ContentNotAvailableException) {
             null
         } catch (failure: ExtractionException) {

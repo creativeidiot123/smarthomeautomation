@@ -35,6 +35,10 @@ data class YouTubeUiState(
     /** Saves still queued or running on this phone, live from WorkManager. */
     val savingIds: Set<String> = emptySet(),
     val notice: String? = null,
+    /** Every downloaded song, newest first, from the files on this phone. */
+    val downloads: List<YouTubeTrack> = emptyList(),
+    /** Video ID to the `file://` artwork saved with its download, for viewing offline. */
+    val downloadArt: Map<String, String> = emptyMap(),
 )
 
 /** Screen-scoped projection; tokens, identity and metadata never leave process memory. */
@@ -45,8 +49,10 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     private val mutableState = MutableStateFlow(YouTubeUiState())
     private val savingIds = OfflineAudioLibrary.pendingIds(application)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
-    val state: StateFlow<YouTubeUiState> = combine(mutableState, savingIds) { ui, saving ->
-        ui.copy(savingIds = saving)
+    /** Kept apart from [mutableState], which account changes reset; the files outlive any account. */
+    private val downloads = MutableStateFlow(emptyList<YouTubeTrack>() to emptyMap<String, String>())
+    val state: StateFlow<YouTubeUiState> = combine(mutableState, savingIds, downloads) { ui, saving, saved ->
+        ui.copy(savingIds = saving, downloads = saved.first, downloadArt = saved.second)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, mutableState.value)
     private var accessToken: String? = null
     var authorizedAccount: Account? = null
@@ -59,6 +65,58 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         // A playlist added from the OnePlus (or a worker) appears here without reopening the screen.
         viewModelScope.launch { savedStore.revision.drop(1).collect { reloadSavedPlaylists() } }
         viewModelScope.launch { showFinishedSaves() }
+        viewModelScope.launch { reloadDownloads() }
+    }
+
+    private suspend fun reloadDownloads() {
+        try {
+            val app = getApplication<Application>()
+            val tracks = OfflineAudioLibrary.savedTracks(app)
+            val art = withContext(Dispatchers.IO) {
+                tracks.mapNotNull { track ->
+                    OfflineSongInfo.artFile(app, track.id).takeIf { it.isFile }
+                        ?.let { track.id to android.net.Uri.fromFile(it).toString() }
+                }.toMap()
+            }
+            downloads.value = tracks to art
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.w("HomeDJOffline", "Downloaded songs list failed: " + failure.javaClass.simpleName)
+        }
+    }
+
+    /** Stops pending saves of these songs; files already downloaded stay. */
+    fun cancelSaves(tracks: List<YouTubeTrack>) {
+        OfflineAudioLibrary.cancel(getApplication(), tracks.map(YouTubeTrack::id))
+        mutableState.update { it.copy(notice = "Stopped saving " + tracks.size + " songs.") }
+        RemoteActivity.record(RemoteActivity.SAMSUNG, "Stopped saving " + tracks.size + " songs")
+    }
+
+    /**
+     * Deletes downloads after the user confirmed. A whole playlist ([playlistId]) also leaves
+     * auto-save, so the next sync does not download it again.
+     */
+    fun removeDownloads(tracks: List<YouTubeTrack>, playlistId: String? = null) {
+        val ids = tracks.map(YouTubeTrack::id)
+        viewModelScope.launch {
+            try {
+                val app = getApplication<Application>()
+                val removed = if (playlistId != null) OfflineAudioLibrary.removePlaylist(app, playlistId, ids)
+                    else OfflineAudioLibrary.remove(app, ids)
+                mutableState.update {
+                    it.copy(offlineIds = it.offlineIds - ids.toSet(), autoDownloadIds = auto.playlistIds,
+                        notice = "Removed " + songCount(removed) + ".")
+                }
+                RemoteActivity.record(RemoteActivity.SAMSUNG, "Removed " + songCount(removed))
+                reloadDownloads()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("HomeDJOffline", "Download removal failed: " + failure.javaClass.simpleName)
+                mutableState.update { it.copy(error = "Could not remove the downloads. Try again.") }
+            }
+        }
     }
 
     /** A shown song whose save left WorkManager's pending set turns "Saved" once its file exists. */
@@ -68,6 +126,7 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
             val finished = before - now
             before = now
             if (finished.isEmpty()) return@collect
+            reloadDownloads()
             val shown = mutableState.value.tracks.mapTo(hashSetOf(), YouTubeTrack::id)
             val saved = withContext(Dispatchers.IO) {
                 finished.filter { it in shown && OfflineAudioLibrary.existing(getApplication(), it) != null }

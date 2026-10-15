@@ -2,13 +2,10 @@ package dev.homedj.app
 
 import android.content.Context
 import android.media.AudioManager
-import android.net.Uri
 import android.os.Bundle
 import android.os.Process
 import android.util.Log
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -118,7 +115,7 @@ internal class MusicScheduler(
                 }
                 breaks.restart()
                 player.shuffleModeEnabled = true
-                player.setMediaItems(tracks.map { trackItem(it.id, it.title, extras) })
+                player.setMediaItems(tracks.map { youTubeMediaItem(it, extras) })
                 player.prepare()
                 player.play()
                 Log.i("HomeDJ", "Scheduled slot started: songs=" + tracks.size + " trigger=" + trigger)
@@ -139,7 +136,8 @@ internal class MusicScheduler(
     private fun playNext(args: Bundle): SessionResult {
         val id = args.getString(ARG_ID).orEmpty()
         if (!NativeAudioSource.validId(id)) return failure(SessionError.ERROR_BAD_VALUE, "Invalid song")
-        val item = trackItem(id, args.getString(ARG_TITLE).orEmpty().take(300).ifBlank { id }, null)
+        val item = youTubeMediaItem(YouTubeTrack(id, args.getString(ARG_TITLE).orEmpty().take(300).ifBlank { id },
+            args.getString(ARG_ARTIST).orEmpty().take(200)))
         if (player.mediaItemCount == 0) {
             player.shuffleModeEnabled = true
             player.setMediaItem(item)
@@ -191,12 +189,6 @@ internal class MusicScheduler(
         audio.setStreamVolume(AudioManager.STREAM_MUSIC, (max * percent + 50) / 100, 0)
     }
 
-    private fun trackItem(id: String, title: String, extras: Bundle?): MediaItem =
-        MediaItem.Builder().setUri(HomeDjMediaResolver.trackUri(id))
-            .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setExtras(extras)
-                .setArtworkUri(youTubeArtworkUrl(id)?.let(Uri::parse)).build())
-            .build()
-
     private fun failure(code: Int, message: String) = SessionResult(SessionError(code, message))
 
     companion object {
@@ -204,6 +196,7 @@ internal class MusicScheduler(
         const val SLOT_LABEL = "homedj_slot_label"
         const val ARG_ID = "id"
         const val ARG_TITLE = "title"
+        const val ARG_ARTIST = "artist"
         private const val MAX_TRACKS = 500
         val TICK = SessionCommand("dev.homedj.app.SCHEDULE_TICK", Bundle.EMPTY)
         val RESUME = SessionCommand("dev.homedj.app.SCHEDULE_RESUME", Bundle.EMPTY)

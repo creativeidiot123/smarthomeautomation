@@ -209,7 +209,7 @@ class RemoteServerService : Service() {
                 stopCast()
             }
             if (action in setOf("catalog", "tracks", "downloads", "playTrack", "playPlaylist",
-                    "saveTrack", "savePlaylist", "importPlaylist")) {
+                    "saveTrack", "savePlaylist", "importPlaylist", "cancelSave", "removeSaved")) {
                 return@withContext musicLibrary.handle(request, active).also { reply ->
                     if (reply.optBoolean("ok") && action !in setOf("catalog", "tracks", "downloads")) {
                         RemoteActivity.record(RemoteActivity.ONEPLUS, reply.optString("message", action))
@@ -233,6 +233,17 @@ class RemoteServerService : Service() {
                         want -> "Play"
                         else -> "Pause"
                     }
+                }
+                // Newer controllers only; an older Samsung answers "Unknown command".
+                "seek" -> {
+                    if (active.currentMediaItem == null || castSocket.get() != null) {
+                        return@withContext JSONObject().put("ok", false).put("error", "Nothing to seek")
+                    }
+                    val target = seekTarget(if (request.has("index")) request.optInt("index") else null,
+                        active.currentMediaItemIndex, request.optLong("position", -1), active.duration)
+                        ?: return@withContext JSONObject().put("ok", false).put("error", STALE_SONG)
+                    active.seekTo(target)
+                    "Seek to " + formatDuration(target / 1_000)
                 }
                 "next" -> { active.seekToNextMediaItem(); "Next song" }
                 "previous" -> { active.seekToPreviousMediaItem(); "Previous song" }
@@ -280,6 +291,14 @@ class RemoteServerService : Service() {
                 .put("index", active.currentMediaItemIndex)
                 .put("library", SavedPlaylistStore.shared(this@RemoteServerService).revision.value)
                 .put("activity", RemoteActivity.toJson(RemoteActivity.entries.value, System.currentTimeMillis()))
+                .also { reply ->
+                    val metadata = active.currentMediaItem?.mediaMetadata
+                    if (castSocket.get() == null && metadata != null) {
+                        reply.put("artist", metadata.artist?.toString().orEmpty())
+                        reply.put("position", active.currentPosition.coerceAtLeast(0))
+                        if (active.duration > 0) reply.put("duration", active.duration)
+                    }
+                }
         }
 
     override fun onDestroy() {
@@ -322,3 +341,9 @@ internal fun wantsPlaying(requested: Boolean?, playing: Boolean): Boolean = requ
 /** A skip aimed at a song Samsung already left is refused instead of skipping a second song. */
 internal fun isStaleSkip(requestedIndex: Int?, currentIndex: Int): Boolean =
     requestedIndex != null && requestedIndex != currentIndex
+
+/** Where to seek, or null for a negative position or a seek aimed at a song Samsung already left. */
+internal fun seekTarget(requestedIndex: Int?, currentIndex: Int, positionMs: Long, durationMs: Long): Long? {
+    if (positionMs < 0 || isStaleSkip(requestedIndex, currentIndex)) return null
+    return if (durationMs > 0) positionMs.coerceAtMost(durationMs) else positionMs
+}

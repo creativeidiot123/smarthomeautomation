@@ -33,9 +33,9 @@ internal data class SavedPlaylistCatalog(
     val playlists: List<YouTubePlaylist>
         get() = (imported + owned).distinctBy(YouTubePlaylist::id)
 
-    /** Video ID to song title across every cached playlist. */
-    fun titles(): Map<String, String> =
-        tracks.values.asSequence().flatten().associate { it.id to it.title }
+    /** Video ID to the cached song with its details, for downloaded songs no playlist shows. */
+    fun songs(): Map<String, YouTubeTrack> =
+        tracks.values.asSequence().flatten().associateBy(YouTubeTrack::id)
 
     /** Newest link first; adding a link again refreshes its songs. */
     fun withPublic(linked: LinkedPlaylist): SavedPlaylistCatalog = copy(
@@ -54,9 +54,7 @@ internal object SavedPlaylistCodec {
         .put("tracks", JSONObject().also { target ->
             catalog.tracks.forEach { (id, songs) ->
                 target.put(id, JSONArray().also { array ->
-                    songs.forEach { song ->
-                        array.put(JSONObject().put("id", song.id).put("title", song.title))
-                    }
+                    songs.forEach { song -> array.put(trackJson(song)) }
                 })
             }
         }).toString()
@@ -76,12 +74,7 @@ internal object SavedPlaylistCodec {
                 val array = objectTracks.optJSONArray(id) ?: continue
                 val songs = buildList {
                     for (index in 0 until minOf(array.length(), 5_000)) {
-                        val value = array.optJSONObject(index) ?: continue
-                        val songId = value.optString("id")
-                        val title = value.optString("title")
-                        if (songId.isNotBlank() && title.isNotBlank()) {
-                            add(YouTubeTrack(songId.take(150), title.take(300)))
-                        }
+                        array.optJSONObject(index)?.let(::parseTrack)?.let(::add)
                     }
                 }
                 put(id, songs)
@@ -96,11 +89,29 @@ internal object SavedPlaylistCodec {
         )
     }
 
+    /** `artist` and `duration` are optional: snapshots written before them still decode. */
+    fun trackJson(song: YouTubeTrack): JSONObject = JSONObject().put("id", song.id).put("title", song.title).also {
+        if (song.artist.isNotBlank()) it.put("artist", song.artist)
+        if (song.durationSeconds > 0) it.put("duration", song.durationSeconds)
+    }
+
+    /** `art` is optional: snapshots and LAN peers without it still read. */
+    fun playlistJson(playlist: YouTubePlaylist): JSONObject =
+        JSONObject().put("id", playlist.id).put("title", playlist.title).put("count", playlist.itemCount).also {
+            if (playlist.artworkUrl.isNotBlank()) it.put("art", playlist.artworkUrl)
+        }
+
+    fun parseTrack(value: JSONObject): YouTubeTrack? {
+        val songId = value.optString("id")
+        val title = value.optString("title")
+        if (songId.isBlank() || title.isBlank()) return null
+        return YouTubeTrack(songId.take(150), title.take(300), value.optString("artist").take(200),
+            value.optInt("duration").coerceIn(0, MAX_TRACK_SECONDS))
+    }
+
     private fun playlistArray(playlists: List<YouTubePlaylist>): JSONArray =
         JSONArray().also { array ->
-            playlists.forEach {
-                array.put(JSONObject().put("id", it.id).put("title", it.title).put("count", it.itemCount))
-            }
+            playlists.forEach { array.put(playlistJson(it)) }
         }
 
     private fun parsePlaylists(array: JSONArray?): List<YouTubePlaylist> = buildList {
@@ -110,7 +121,8 @@ internal object SavedPlaylistCodec {
             val id = value.optString("id")
             val title = value.optString("title")
             if (id.isNotBlank() && title.isNotBlank()) {
-                add(YouTubePlaylist(id.take(150), title.take(300), value.optInt("count").coerceAtLeast(0)))
+                add(YouTubePlaylist(id.take(150), title.take(300), value.optInt("count").coerceAtLeast(0),
+                    youTubeImageUrl(value.optString("art")).orEmpty()))
             }
         }
     }

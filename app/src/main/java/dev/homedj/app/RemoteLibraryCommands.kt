@@ -1,11 +1,8 @@
 package dev.homedj.app
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -28,33 +25,32 @@ internal class RemoteLibraryCommands(private val app: Context) {
             return withContext(Dispatchers.IO) {
                 val saved = catalog.read()
                 when (action) {
-                    "catalog" -> page(saved.playlists, offset) {
-                        JSONObject().put("id", it.id).put("title", it.title).put("count", it.itemCount)
-                    }
+                    "catalog" -> page(saved.playlists, offset) { SavedPlaylistCodec.playlistJson(it) }
                     "tracks" -> {
                         if (saved.playlists.none { it.id == id }) return@withContext error("Unknown playlist")
                         val pending = OfflineAudioLibrary.pendingIds(app).first()
-                        page(saved.tracks[id].orEmpty(), offset) {
-                            val local = OfflineAudioLibrary.existing(app, it.id) != null
-                            // "saving" is optional: an older controller ignores it.
-                            JSONObject().put("id", it.id).put("title", it.title)
-                                .put("saved", local).put("saving", !local && it.id in pending)
+                        val songs = saved.tracks[id].orEmpty()
+                        val local = songs.mapNotNullTo(hashSetOf()) { song ->
+                            song.id.takeIf { OfflineAudioLibrary.existing(app, it) != null }
                         }
+                        // "saving", "artist", "duration" and the counts are optional: older controllers ignore them.
+                        page(songs, offset) {
+                            SavedPlaylistCodec.trackJson(it)
+                                .put("saved", it.id in local).put("saving", it.id !in local && it.id in pending)
+                        }.put("savedCount", local.size)
+                            .put("savingCount", songs.count { it.id !in local && it.id in pending })
                     }
-                    else -> {
-                        val files = OfflineAudioLibrary.allLocalMedia(app, saved.titles())
-                        page(files, offset) {
-                            val videoId = it.uri.lastPathSegment?.substringBeforeLast('.') ?: ""
-                            JSONObject().put("id", videoId)
-                                .put("title", it.title)
-                                .put("saved", true)
-                        }
+                    else -> page(OfflineAudioLibrary.savedTracks(app), offset) {
+                        SavedPlaylistCodec.trackJson(it).put("saved", true)
                     }
                 }
             }
         }
 
         if (action == "importPlaylist") return importLink(request.optString("link"))
+        if (action == "cancelSave" || action == "removeSaved") {
+            return changeDownload(action == "removeSaved", request.optString("kind"), id)
+        }
         if (action !in setOf("playTrack", "playPlaylist", "saveTrack", "savePlaylist")) {
             return error("Unknown library command")
         }
@@ -92,11 +88,7 @@ internal class RemoteLibraryCommands(private val app: Context) {
                 if (action == "saveTrack") "Saving $name on Samsung"
                 else "Saving ${tracks.size} songs from $name on Samsung")
         }
-        val items = tracks.map {
-            MediaItem.Builder().setUri(HomeDjMediaResolver.trackUri(it.id))
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(it.title)
-                    .setArtworkUri(youTubeArtworkUrl(it.id)?.let(Uri::parse)).build()).build()
-        }
+        val items = tracks.map { youTubeMediaItem(it) }
         if (listed != null) player.setMediaItems(items, start, C.TIME_UNSET) else player.setMediaItems(items)
         player.prepare()
         player.play()
@@ -125,6 +117,34 @@ internal class RemoteLibraryCommands(private val app: Context) {
             Log.w("HomeDJRemote", "Remote playlist import failed: " + failure.javaClass.simpleName)
             error("Samsung could not read this playlist. Check the link and Samsung's internet.")
         }
+    }
+
+    /**
+     * Newer controllers only (an older Samsung answers "Unknown command"). Samsung decides which
+     * songs a playlist means from its own catalog; the controller only names the playlist or song.
+     */
+    private suspend fun changeDownload(remove: Boolean, kind: String, id: String): JSONObject {
+        val saved = catalog.read()
+        val (ids, name) = when (kind) {
+            "playlist" -> {
+                val playlist = saved.playlists.firstOrNull { it.id == id } ?: return error("Unknown playlist")
+                saved.tracks[id].orEmpty().map(YouTubeTrack::id) to playlist.title
+            }
+            "track" -> {
+                val local = withContext(Dispatchers.IO) { OfflineAudioLibrary.existing(app, id) != null }
+                if (!isTrackAllowed(saved, id, local)) return error("Song is not in the saved library")
+                listOf(id) to (saved.songs()[id]?.title ?: "song")
+            }
+            else -> return error("Unknown download target")
+        }
+        if (!remove) {
+            OfflineAudioLibrary.cancel(app, ids)
+            return JSONObject().put("ok", true).put("message", "Stopped saving $name on Samsung")
+        }
+        val removed = if (kind == "playlist") OfflineAudioLibrary.removePlaylist(app, id, ids)
+            else OfflineAudioLibrary.remove(app, ids)
+        return JSONObject().put("ok", true).put("message",
+            if (kind == "track") "Removed $name from Samsung" else "Removed " + songCount(removed) + " of $name from Samsung")
     }
 
     private fun <T> page(items: List<T>, offset: Int, make: (T) -> JSONObject): JSONObject {

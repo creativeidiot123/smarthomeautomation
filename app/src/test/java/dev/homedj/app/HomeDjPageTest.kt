@@ -6,9 +6,9 @@ import org.junit.Test
 
 class HomeDjPageTest {
     @Test
-    fun homeLibrarySetupAreTheOnlyTopLevelDestinations() {
+    fun homeScheduleSettingsAreTheOnlyTopLevelDestinations() {
         val pages = HomeDjPage.entries
-        assertEquals(listOf("Home", "Library", "Setup"), pages.map { it.label })
+        assertEquals(listOf("Home", "Schedule", "Settings"), pages.map { it.label })
         assertEquals(pages.size, pages.map { it.label }.distinct().size)
         assertTrue(pages.all { it.label.isNotBlank() })
     }

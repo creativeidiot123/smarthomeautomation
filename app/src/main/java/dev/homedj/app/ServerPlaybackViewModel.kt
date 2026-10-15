@@ -151,14 +151,29 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
     fun playNext(track: YouTubeTrack) = send(MusicScheduler.PLAY_NEXT, Bundle().apply {
         putString(MusicScheduler.ARG_ID, track.id)
         putString(MusicScheduler.ARG_TITLE, track.title)
+        putString(MusicScheduler.ARG_ARTIST, track.artist)
     }, "Play next: " + track.title)
+
+    /** Queues these songs from [start]; PlaybackService resolves each stream when its item loads. */
+    fun playTracks(tracks: List<YouTubeTrack>, start: Int) {
+        if (start !in tracks.indices) return
+        val active = controller ?: return notConnected()
+        active.setMediaItems(tracks.map { youTubeMediaItem(it) }, start, C.TIME_UNSET)
+        active.prepare()
+        active.play()
+        RemoteActivity.record(RemoteActivity.SAMSUNG, "Playing " + tracks[start].title)
+    }
+
+    fun seekTo(positionMs: Long) {
+        val active = controller ?: return
+        if (active.currentMediaItem == null || positionMs < 0) return
+        active.seekTo(positionMs)
+    }
 
     fun addToQueue(track: YouTubeTrack) {
         val active = controller ?: return notConnected()
         if (!NativeAudioSource.validId(track.id)) return
-        val item = MediaItem.Builder().setUri(HomeDjMediaResolver.trackUri(track.id))
-            .setMediaMetadata(MediaMetadata.Builder().setTitle(track.title)
-                .setArtworkUri(youTubeArtworkUrl(track.id)?.let(Uri::parse)).build()).build()
+        val item = youTubeMediaItem(track)
         RemoteActivity.record(RemoteActivity.SAMSUNG, "Add to queue: " + track.title)
         if (active.mediaItemCount > 0) {
             active.addMediaItem(item)
@@ -226,6 +241,10 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
                 queueSize = player.mediaItemCount,
                 shuffle = player.shuffleModeEnabled,
                 artworkUrl = player.currentMediaItem?.mediaMetadata?.artworkUri?.toString(),
+                artist = player.currentMediaItem?.mediaMetadata?.artist?.toString().orEmpty(),
+                positionMs = player.currentPosition,
+                durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: -1L,
+                positionAt = SystemClock.elapsedRealtime(),
             ),
             error = if (player.playerError != null) "Unable to play this audio file" else null,
         )
@@ -241,7 +260,8 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
                 player.currentMediaItemIndex, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled)
             while (index != C.INDEX_UNSET && size < UP_NEXT_LIMIT) {
                 val metadata = timeline.getWindow(index, window).mediaItem.mediaMetadata
-                add(QueueEntry(index, metadata.title?.toString() ?: "Unknown song", metadata.artworkUri?.toString()))
+                add(QueueEntry(index, metadata.title?.toString() ?: "Unknown song", metadata.artworkUri?.toString(),
+                    metadata.artist?.toString().orEmpty()))
                 index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled)
             }
         }
@@ -255,7 +275,7 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
     private companion object { const val UP_NEXT_LIMIT = 30 }
 }
 
-data class QueueEntry(val index: Int, val title: String, val artworkUrl: String? = null)
+data class QueueEntry(val index: Int, val title: String, val artworkUrl: String? = null, val artist: String = "")
 
 data class ServerPlaybackUiState(
     val connected: Boolean = false,

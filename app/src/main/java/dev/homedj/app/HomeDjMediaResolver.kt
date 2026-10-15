@@ -2,7 +2,10 @@ package dev.homedj.app
 
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
 import android.os.SystemClock
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.ResolvingDataSource
@@ -82,3 +85,14 @@ internal class HomeDjMediaResolver(context: Context) : ResolvingDataSource.Resol
             if ("/videoplayback" in url && "&rn=" !in url) "$url&rn=$number" else url
     }
 }
+
+/** The one way to queue a YouTube song: its stable ID URI plus title, artist and artwork for every controller. */
+internal fun youTubeMediaItem(track: YouTubeTrack, extras: Bundle? = null): MediaItem =
+    MediaItem.Builder().setUri(HomeDjMediaResolver.trackUri(track.id))
+        .setMediaMetadata(MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artist.ifBlank { null })
+            .setArtworkUri(youTubeArtworkUrl(track.id)?.let(Uri::parse))
+            .setExtras(extras)
+            .build())
+        .build()

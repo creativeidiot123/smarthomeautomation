@@ -3,7 +3,9 @@ package dev.homedj.app
 import android.os.Build
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,7 +15,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -26,12 +27,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -43,8 +47,8 @@ import androidx.compose.ui.unit.dp
 
 internal enum class HomeDjPage(val label: String, @param:DrawableRes val icon: Int) {
     HOME("Home", R.drawable.ic_home),
-    LIBRARY("Library", R.drawable.ic_library_music),
-    SETUP("Setup", R.drawable.ic_tune),
+    SCHEDULE("Schedule", R.drawable.ic_schedule),
+    SETTINGS("Settings", R.drawable.ic_settings),
 }
 
 /** Use the phone's accessible Material You colors without changing the app's media owners. */
@@ -61,13 +65,19 @@ internal fun HomeDjTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = colors, content = content)
 }
 
+/** Top title, scrolling content (pull down to refresh when [onRefresh] is set) and an optional bottom bar. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ScreenFrame(
     title: String,
     subtitle: String = "HomeDJ",
     bottomBar: @Composable () -> Unit = {},
+    refreshing: Boolean = false,
+    onRefresh: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // Each page keeps its own scroll position.
+    val scroll = rememberSaveable(title, saver = ScrollState.Saver) { ScrollState(0) }
     Scaffold(
         topBar = {
             Column(
@@ -82,15 +92,20 @@ internal fun ScreenFrame(
         },
         bottomBar = bottomBar,
     ) { insets ->
-        Column(
-            Modifier.fillMaxSize().padding(insets).imePadding().verticalScroll(rememberScrollState()),
-        ) {
-            Column(
-                Modifier.fillMaxWidth().widthIn(max = 760.dp)
-                    .align(Alignment.CenterHorizontally).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                content = content,
-            )
+        val body = @Composable {
+            Column(Modifier.fillMaxSize().imePadding().verticalScroll(scroll)) {
+                Column(
+                    Modifier.fillMaxWidth().widthIn(max = 760.dp)
+                        .align(Alignment.CenterHorizontally).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    content = content,
+                )
+            }
+        }
+        if (onRefresh == null) {
+            Box(Modifier.fillMaxSize().padding(insets)) { body() }
+        } else {
+            PullToRefreshBox(refreshing, onRefresh, Modifier.fillMaxSize().padding(insets)) { body() }
         }
     }
 }
@@ -105,7 +120,7 @@ internal fun RoleLoadingScreen(error: String?) {
 @Composable
 internal fun RolePicker(changing: Boolean, onServer: () -> Unit, onController: () -> Unit) {
     ScreenFrame("Choose this phone's role") {
-        Text("You can change this later in Setup.",
+        Text("You can change this later in Settings.",
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -137,20 +152,23 @@ internal fun ServerScreen(
     onRemoteToggle: (Boolean) -> Unit,
     changing: Boolean,
     onPickAudio: () -> Unit,
-    onPlayDownloads: () -> Unit,
     onPlaySharedDownloads: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onShuffle: () -> Unit,
+    onSeek: (Long) -> Unit,
     onConnectYouTube: () -> Unit,
     onDisconnectYouTube: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
     onImportPlaylist: (String) -> Unit,
     onDownloadPlaylist: (String) -> Unit,
     onStreamTrack: (YouTubeTrack) -> Unit,
+    onPlayTracks: (List<YouTubeTrack>, Int) -> Unit,
     onDownloadTrack: (YouTubeTrack) -> Unit,
     onDownloadSelected: () -> Unit,
+    onCancelSaves: (List<YouTubeTrack>) -> Unit,
+    onRemoveDownloads: (List<YouTubeTrack>, String?) -> Unit,
     onAutoEnabled: (Boolean) -> Unit,
     onToggleAutoPlaylist: (String) -> Unit,
     onSwitch: () -> Unit,
@@ -168,11 +186,12 @@ internal fun ServerScreen(
     activity: List<ActivityEntry>,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var showPlaylists by rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
+    // Hoisted out of the Home tab so the open playlist survives switching tabs.
+    var homeView by rememberSaveable { mutableStateOf(HOME_GRID) }
     val snapshot = status.snapshot
     val nowPlaying = NowPlayingUi(
         title = snapshot.title,
-        subtitle = status.scheduleLabel?.let { "Scheduled · $it" } ?: "${snapshot.queueSize} songs in queue",
+        artist = snapshot.artist.ifBlank { status.scheduleLabel?.let { "Scheduled · $it" }.orEmpty() },
         artworkUrl = snapshot.artworkUrl,
         hasTrack = snapshot.hasTrack,
         playing = snapshot.isPlaying,
@@ -181,9 +200,13 @@ internal fun ServerScreen(
         canNext = status.connected && snapshot.hasNext,
         shuffle = snapshot.shuffle,
         canShuffle = status.connected && snapshot.queueSize > 1,
+        positionMs = snapshot.positionMs,
+        durationMs = snapshot.durationMs,
+        positionAt = snapshot.positionAt,
+        canSeek = status.connected && snapshot.hasTrack,
     )
-    val actions = remember(onPlayPause, onNext, onPrevious, onShuffle) {
-        PlayerActions(onPlayPause, onNext, onPrevious, onShuffle)
+    val actions = remember(onPlayPause, onNext, onPrevious, onShuffle, onSeek) {
+        PlayerActions(onPlayPause, onNext, onPrevious, onShuffle, onSeek)
     }
     MusicShell(
         subtitle = "HomeDJ · Samsung",
@@ -191,28 +214,38 @@ internal fun ServerScreen(
         onTab = { tab = it },
         nowPlaying = nowPlaying,
         actions = actions,
-        playerExtra = { UpNextSection(status.upNext, onJumpTo) },
+        queue = { UpNextSection(status.upNext, onJumpTo) },
+        refreshing = youtubeState.loadingPlaylists,
+        onRefresh = if (tab == HomeDjPage.HOME.ordinal && homeView == HOME_GRID && youtubeState.authorized)
+            onConnectYouTube else null,
     ) {
         if (!status.connected) {
             Text("Connecting to the music player…", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         when (tab) {
-            0 -> {
-                status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                SectionTitle("Play something")
-                Column {
-                    ShortcutRow(R.drawable.ic_download_done, "Offline songs",
-                        "Everything saved on this phone", onPlayDownloads,
-                        enabled = status.connected && !changing)
-                    ShortcutRow(R.drawable.ic_music_note, "Audio files",
-                        "Pick songs from this phone's storage", onPickAudio,
-                        enabled = status.connected && !changing)
-                    ShortcutRow(R.drawable.ic_library_music, "YouTube playlists",
-                        "Browse and save in Library", { tab = HomeDjPage.LIBRARY.ordinal })
-                }
+            0 -> YouTubeSection(
+                state = youtubeState,
+                view = homeView,
+                onViewChange = { homeView = it },
+                enabled = status.connected && !changing,
+                onConnect = onConnectYouTube,
+                onPickAudio = onPickAudio,
+                onSelectPlaylist = onSelectPlaylist,
+                onImportPlaylist = onImportPlaylist,
+                onDownloadPlaylist = onDownloadPlaylist,
+                onStreamTrack = onStreamTrack,
+                onPlayTracks = onPlayTracks,
+                onPlayNext = onPlayNext,
+                onAddToQueue = onAddToQueue,
+                onDownloadTrack = onDownloadTrack,
+                onDownloadSelected = onDownloadSelected,
+                onCancelSaves = onCancelSaves,
+                onRemoveDownloads = onRemoveDownloads,
+                onToggleAutoPlaylist = onToggleAutoPlaylist,
+            )
+            1 -> {
                 ScheduleStatusCard(status, scheduleState.slots.isNotEmpty(), onResumeSchedule)
-                MusicBreaksCard(breakSettings, breakResumesAt, enabled = !changing, onChange = onBreaks)
-                ActivityFeedCard(activity)
                 ScheduleSection(
                     state = scheduleState,
                     playlists = youtubeState.playlists,
@@ -221,25 +254,11 @@ internal fun ServerScreen(
                     onDelete = onDeleteSlot,
                     onAllowExactAlarms = onAllowExactAlarms,
                 )
+                MusicBreaksCard(breakSettings, breakResumesAt, enabled = !changing, onChange = onBreaks)
+                ActivityFeedCard(activity)
             }
-            1 -> YouTubeSection(
-                state = youtubeState,
-                showPlaylists = showPlaylists,
-                onShowPlaylistsChange = { showPlaylists = it },
-                onConnect = onConnectYouTube,
-                onDisconnect = onDisconnectYouTube,
-                onSelectPlaylist = onSelectPlaylist,
-                onImportPlaylist = onImportPlaylist,
-                onDownloadPlaylist = onDownloadPlaylist,
-                onStreamTrack = onStreamTrack,
-                onPlayNext = onPlayNext,
-                onAddToQueue = onAddToQueue,
-                onDownloadTrack = onDownloadTrack,
-                onDownloadSelected = onDownloadSelected,
-                onAutoEnabled = onAutoEnabled,
-                onToggleAutoPlaylist = onToggleAutoPlaylist,
-            )
             2 -> {
+                YouTubeAccountCard(youtubeState, onConnectYouTube, onDisconnectYouTube, onAutoEnabled)
                 RemoteServerSection(
                     running = remoteRunning,
                     ip = remoteAddress,
