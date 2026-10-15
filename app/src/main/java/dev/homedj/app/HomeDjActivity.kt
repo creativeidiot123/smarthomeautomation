@@ -1,9 +1,11 @@
 package dev.homedj.app
 
+import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Log
@@ -34,6 +36,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
@@ -61,6 +67,12 @@ class HomeDjActivity : ComponentActivity() {
         }
 
     private val scopes = listOf(Scope(YOUTUBE_SCOPE))
+    private val downloadReadPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted && roleModel.state.value.mode == HomeDjMode.SERVER) queueDownloadedAudio()
+            else if (!granted) downloadMessage("Allow music access to play downloaded audio.")
+        }
+
     private val audioPicker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             if (roleModel.state.value.mode != HomeDjMode.SERVER) return@registerForActivityResult
@@ -98,12 +110,47 @@ class HomeDjActivity : ComponentActivity() {
             }
         }
 
+    private fun requestDownloadedAudio() {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER) return
+        val permission = if (Build.VERSION.SDK_INT >= 33) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+            queueDownloadedAudio()
+        } else {
+            downloadReadPermission.launch(permission)
+        }
+    }
+
+    private fun queueDownloadedAudio() {
+        lifecycleScope.launch {
+            try {
+                val audio = withContext(Dispatchers.IO) {
+                    DownloadedAudioLibrary.scan(this@HomeDjActivity)
+                }
+                if (roleModel.state.value.mode != HomeDjMode.SERVER) return@launch
+                if (audio.isEmpty()) {
+                    downloadMessage("No indexed audio in Music/HomeDJ. Check Termux downloads.")
+                } else {
+                    playback.playPickedAudio(audio)
+                    downloadMessage("Queued " + audio.size + " downloaded audio files.")
+                }
+            } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                Log.w("HomeDJ", "MediaStore HomeDJ audio scan failed: " + failure.javaClass.simpleName)
+                downloadMessage("Unable to read downloaded audio. Check storage permission.")
+            }
+        }
+    }
+
     private fun displayName(uri: Uri): String =
         contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         } ?: "Selected audio"
 
-    private fun requestYouTubeAccess() {
+    private fun requestYouTubeAccess(interactive: Boolean = true) {
         if (authorizationPending || revokePending || roleModel.state.value.mode != HomeDjMode.SERVER) return
         authorizationPending = true
         val request = AuthorizationRequest.builder().setRequestedScopes(scopes).build()
@@ -112,6 +159,10 @@ class HomeDjActivity : ComponentActivity() {
                 if (roleModel.state.value.mode != HomeDjMode.SERVER) {
                     authorizationPending = false
                 } else if (result.hasResolution()) {
+                    if (!interactive) {
+                        authorizationPending = false
+                        return@addOnSuccessListener
+                    }
                     val pending = result.pendingIntent
                     if (pending == null) {
                         authorizationPending = false
@@ -133,7 +184,9 @@ class HomeDjActivity : ComponentActivity() {
             .addOnFailureListener(this) { failure ->
                 authorizationPending = false
                 Log.w("HomeDJ", "Google authorization failed: " + failure.javaClass.simpleName)
-                youtube.authorizationError("YouTube authorization failed. Check Google Play services.")
+                if (interactive) {
+                    youtube.authorizationError("YouTube authorization failed. Check Google Play services.")
+                }
             }
     }
 
@@ -199,7 +252,7 @@ class HomeDjActivity : ComponentActivity() {
         if (revokePending || authorizationPending) return
         val account = youtube.authorizedAccount
         if (account == null) {
-            youtube.clear()
+            youtube.disconnectAndEraseCatalog()
             youtube.authorizationError(
                 "Playlist view cleared. Revoke the app's access from Google Account settings."
             )
@@ -210,7 +263,7 @@ class HomeDjActivity : ComponentActivity() {
         Identity.getAuthorizationClient(this).revokeAccess(request)
             .addOnSuccessListener(this) {
                 revokePending = false
-                youtube.clear()
+                youtube.disconnectAndEraseCatalog()
             }
             .addOnFailureListener(this) { failure ->
                 revokePending = false
@@ -229,6 +282,8 @@ class HomeDjActivity : ComponentActivity() {
                     role.mode == HomeDjMode.SERVER -> {
                         DisposableEffect(playback, youtube) {
                             playback.connect()
+                            youtube.showSavedCatalog()
+                            requestYouTubeAccess(interactive = false)
                             if (RemotePrefs(this@HomeDjActivity).enabled) setRemoteEnabled(true)
                             onDispose {
                                 playback.disconnect()
@@ -247,11 +302,12 @@ class HomeDjActivity : ComponentActivity() {
                             onRemoteToggle = ::setRemoteEnabled,
                             changing = role.changing,
                             onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
+                            onPlayDownloads = ::requestDownloadedAudio,
                             onPlayPause = playback::playOrPause,
                             onNext = playback::next,
                             onPrevious = playback::previous,
                             onShuffle = playback::toggleShuffle,
-                            onConnectYouTube = ::requestYouTubeAccess,
+                            onConnectYouTube = { requestYouTubeAccess(interactive = true) },
                             onDisconnectYouTube = ::disconnectYouTube,
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
@@ -340,6 +396,7 @@ private fun ServerScreen(
     onRemoteToggle: (Boolean) -> Unit,
     changing: Boolean,
     onPickAudio: () -> Unit,
+    onPlayDownloads: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -381,6 +438,9 @@ private fun ServerScreen(
         }
         Button(onClick = onPickAudio, enabled = status.connected && !changing) {
             Text("Choose local audio files")
+        }
+        Button(onClick = onPlayDownloads, enabled = status.connected && !changing) {
+            Text("Play downloaded HomeDJ music")
         }
         status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         YouTubeSection(

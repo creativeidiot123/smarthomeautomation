@@ -36,6 +36,7 @@ internal object TermuxPlaylistDownloads {
             "--audio-format", "mp3",
             "--audio-quality", "5",
             "--no-overwrites",
+            "--download-archive", OUTPUT_DIR + "/downloaded-ids.txt",
             "--paths", OUTPUT_DIR,
             "--output", "%(playlist_title).80B/%(playlist_index)03d - %(title).140B [%(id)s].%(ext)s",
             "https://www.youtube.com/playlist?list=$playlistId",
