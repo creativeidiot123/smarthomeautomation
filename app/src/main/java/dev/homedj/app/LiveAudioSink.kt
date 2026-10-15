@@ -31,14 +31,16 @@ internal object LiveAudioSink {
         if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             throw IOException("Samsung audio focus unavailable")
         }
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(attributes)
-            .setAudioFormat(format)
-            .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 8))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        var track: AudioTrack? = null
         try {
-            if (track.state != AudioTrack.STATE_INITIALIZED) throw IOException("Audio output unavailable")
+            val output = AudioTrack.Builder()
+                .setAudioAttributes(attributes)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 8))
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            track = output
+            if (output.state != AudioTrack.STATE_INITIALIZED) throw IOException("Audio output unavailable")
             var started = false
             var primed = 0
             while (true) {
@@ -46,20 +48,22 @@ internal object LiveAudioSink {
                 if (!LiveAudioFormat.validPacket(pcm.size)) throw IOException("Invalid audio packet")
                 var position = 0
                 while (position < pcm.size) {
-                    val written = track.write(pcm, position, pcm.size - position, AudioTrack.WRITE_BLOCKING)
+                    val written = output.write(pcm, position, pcm.size - position, AudioTrack.WRITE_BLOCKING)
                     if (written <= 0) throw IOException("Samsung audio output stopped")
                     position += written
                 }
                 primed += pcm.size
                 if (!started && primed >= LiveAudioFormat.CHUNK_BYTES * 5) {
-                    track.play()
+                    output.play()
                     started = true
                 }
             }
         } finally {
-            runCatching { track.pause() }
-            track.flush()
-            track.release()
+            track?.let {
+                runCatching { it.pause() }
+                runCatching { it.flush() }
+                it.release()
+            }
             audio.abandonAudioFocusRequest(focus)
         }
     }
