@@ -173,6 +173,9 @@ internal fun ServerScreen(
     onSaveSlot: (id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>) -> Unit,
     onDeleteSlot: (String) -> Unit,
     onAllowExactAlarms: () -> Unit,
+    breakSettings: MusicBreakSettings,
+    breakResumesAt: Long?,
+    onBreaks: (MusicBreakSettings) -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showPlaylists by rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
@@ -218,6 +221,7 @@ internal fun ServerScreen(
                     }
                 }
                 ScheduleStatusCard(status, scheduleState.slots.isNotEmpty(), onResumeSchedule)
+                MusicBreaksCard(breakSettings, breakResumesAt, enabled = !changing, onChange = onBreaks)
                 UpNextSection(status.upNext, onJumpTo)
                 Text("Play something", style = MaterialTheme.typography.titleMedium)
                 FilledTonalButton(onClick = onPlayDownloads, enabled = status.connected && !changing,

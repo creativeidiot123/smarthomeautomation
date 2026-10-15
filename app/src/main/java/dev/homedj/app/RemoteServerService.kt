@@ -12,6 +12,7 @@ import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
@@ -216,6 +217,12 @@ class RemoteServerService : Service() {
                     val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                     audio.setStreamVolume(AudioManager.STREAM_MUSIC, (max * percent + 50) / 100, 0)
                 }
+                "setBreaks" -> {
+                    val next = request.optJSONObject("breaks")?.let(MusicBreakSettings::fromJson)
+                    if (next == null || !MusicBreakStore(this@RemoteServerService).save(next)) {
+                        return@withContext JSONObject().put("ok", false).put("error", "Invalid break settings")
+                    }
+                }
                 else -> return@withContext JSONObject().put("ok", false).put("error", "Unknown command")
             }
             val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -230,6 +237,9 @@ class RemoteServerService : Service() {
                 .put("queueSize", active.mediaItemCount)
                 .put("shuffle", active.shuffleModeEnabled)
                 .put("volume", audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / max)
+                .put("breaks", MusicBreakStore(this@RemoteServerService).read().toJson())
+                .put("breakSeconds", MusicBreakPolicy.secondsLeft(
+                    MusicBreaks.resumeAt.value, SystemClock.elapsedRealtime()))
         }
 
     override fun onDestroy() {

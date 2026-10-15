@@ -304,6 +304,8 @@ class HomeDjActivity : ComponentActivity() {
                         val status by playback.status.collectAsStateWithLifecycle()
                         val youtubeState by youtube.state.collectAsStateWithLifecycle()
                         val scheduleState by schedule.state.collectAsStateWithLifecycle()
+                        val breakSettings by playback.breakSettings.collectAsStateWithLifecycle()
+                        val breakResumesAt by playback.breakResumesAt.collectAsStateWithLifecycle()
                         // Cached song counts change whenever Library syncs playlists or their songs.
                         LaunchedEffect(youtubeState.playlists, youtubeState.tracks) { schedule.load() }
                         val remoteRunning by RemoteServerService.running.collectAsStateWithLifecycle()
@@ -343,6 +345,9 @@ class HomeDjActivity : ComponentActivity() {
                             onSaveSlot = schedule::save,
                             onDeleteSlot = schedule::delete,
                             onAllowExactAlarms = ::requestExactAlarms,
+                            breakSettings = breakSettings,
+                            breakResumesAt = breakResumesAt,
+                            onBreaks = playback::setBreaks,
                         )
                     }
                     role.mode == HomeDjMode.CONTROLLER -> {
@@ -367,6 +372,7 @@ class HomeDjActivity : ComponentActivity() {
                             onBrowseTracks = remote::browseTracks,
                             onLoadMore = remote::loadMore,
                             onLibraryAction = remote::libraryAction,
+                            onBreaks = remote::setBreaks,
                             onSwitch = {
                                 LiveAudioCastService.stop(this@HomeDjActivity)
                                 roleModel.select(HomeDjMode.SERVER)

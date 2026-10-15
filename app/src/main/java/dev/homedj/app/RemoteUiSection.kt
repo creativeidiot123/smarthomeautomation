@@ -72,6 +72,7 @@ internal fun RemoteControllerScreen(
     onBrowseTracks: (String) -> Unit,
     onLoadMore: () -> Unit,
     onLibraryAction: (String, String) -> Unit,
+    onBreaks: (MusicBreakSettings) -> Unit,
     onSwitch: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -131,6 +132,9 @@ internal fun RemoteControllerScreen(
                             Text(if (state.shuffle) "Shuffle on" else "Shuffle off")
                         }
                     }
+                }
+                if (state.connected) {
+                    MusicBreaksCard(state.breaks, state.breakResumesAt, enabled = !changing, onChange = onBreaks)
                 }
                 Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.fillMaxWidth().padding(16.dp),

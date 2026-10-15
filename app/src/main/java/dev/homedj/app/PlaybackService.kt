@@ -1,6 +1,7 @@
 package dev.homedj.app
 
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.Process
 import android.util.Log
 import androidx.media3.common.AudioAttributes
@@ -32,6 +33,7 @@ class PlaybackService : MediaLibraryService() {
     private val roleScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var player: ExoPlayer? = null
     private var librarySession: MediaLibrarySession? = null
+    private var breaks: MusicBreaks? = null
 
     @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     override fun onCreate() {
@@ -53,11 +55,23 @@ class PlaybackService : MediaLibraryService() {
         // Every new queue starts shuffled; the shuffle button still turns it off for that queue.
         localPlayer.shuffleModeEnabled = true
         localPlayer.addListener(PlaybackRecovery(localPlayer, resolver, roleScope))
-        val scheduler = MusicScheduler(this, localPlayer, roleScope)
+        val wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HomeDJ:musicBreak")
+            .apply { setReferenceCounted(false) }
+        val musicBreaks = MusicBreaks(
+            localPlayer, roleScope, wakeLock,
+            onHoldReleased = { librarySession?.let { onUpdateNotification(it, false) } },
+            canResume = {
+                !LiveAudioSink.active && MusicScheduler.queueMayPlayNow(this@PlaybackService, localPlayer)
+            },
+        )
+        breaks = musicBreaks
+        localPlayer.addListener(musicBreaks)
+        val scheduler = MusicScheduler(this, localPlayer, roleScope, musicBreaks)
         localPlayer.addListener(scheduler)
         librarySession = MediaLibrarySession.Builder(
             this,
-            localPlayer,
+            UserCommandPlayer(localPlayer, musicBreaks),
             object : MediaLibrarySession.Callback {
                 override fun onConnect(
                     session: MediaSession, controller: MediaSession.ControllerInfo,
@@ -86,6 +100,7 @@ class PlaybackService : MediaLibraryService() {
                 }
                 .collect { mode ->
                     if (mode != HomeDjMode.SERVER) {
+                        musicBreaks.cancel()
                         localPlayer.stop()
                         localPlayer.clearMediaItems()
                         ScheduleAlarms.cancel(this@PlaybackService)
@@ -94,6 +109,9 @@ class PlaybackService : MediaLibraryService() {
                     }
                 }
         }
+        roleScope.launch {
+            MusicBreakStore(this@PlaybackService).settings.collect(musicBreaks::update)
+        }
     }
 
     @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
@@ -101,8 +119,15 @@ class PlaybackService : MediaLibraryService() {
         if (controllerInfo.uid == Process.myUid() || controllerInfo.isTrusted) librarySession
         else null
 
+    /** A music break pauses on purpose; staying foreground lets its resume start playback again. */
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        super.onUpdateNotification(session, startInForegroundRequired || breaks?.onBreak == true)
+    }
+
     override fun onDestroy() {
         roleScope.cancel()
+        breaks?.release()
+        breaks = null
         librarySession?.release()
         librarySession = null
         player?.release()

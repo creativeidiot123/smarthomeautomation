@@ -17,8 +17,14 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
+import androidx.lifecycle.viewModelScope
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import java.util.concurrent.ExecutionException
 
 data class LocalAudio(val uri: Uri, val title: String)
@@ -30,6 +36,17 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
     private var controller: MediaController? = null
     private var connectionVersion = 0
     private var future: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
+    private val breakStore = MusicBreakStore(application)
+    val breakSettings: StateFlow<MusicBreakSettings> = breakStore.settings
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), breakStore.read())
+    /** Wall-clock time the running break ends, for display only; PlaybackService owns the break. */
+    val breakResumesAt: StateFlow<Long?> = MusicBreaks.resumeAt
+        .map { at -> at?.let { System.currentTimeMillis() + it - SystemClock.elapsedRealtime() } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun setBreaks(settings: MusicBreakSettings) {
+        breakStore.save(settings)
+    }
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {

@@ -35,6 +35,7 @@ internal class MusicScheduler(
     private val app: Context,
     private val player: ExoPlayer,
     private val scope: CoroutineScope,
+    private val breaks: MusicBreaks,
 ) : Player.Listener {
 
     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -114,6 +115,7 @@ internal class MusicScheduler(
                     putString(SLOT_KEY, action.key)
                     putString(SLOT_LABEL, action.slot.label)
                 }
+                breaks.restart()
                 player.shuffleModeEnabled = true
                 player.setMediaItems(tracks.map { trackItem(it.id, it.title, extras) })
                 player.prepare()
@@ -122,6 +124,7 @@ internal class MusicScheduler(
                 SessionResult(SessionResult.RESULT_SUCCESS)
             }
             ScheduleAction.Pause -> {
+                breaks.cancel()
                 player.pause()
                 SessionResult(SessionResult.RESULT_SUCCESS)
             }
@@ -165,10 +168,10 @@ internal class MusicScheduler(
     }
 
     private fun queueState(): QueueState = QueueState(
-        slotKey = if (player.mediaItemCount == 0) null
-            else player.getMediaItemAt(0).mediaMetadata.extras?.getString(SLOT_KEY),
+        slotKey = queueSlotKey(player),
         hasItems = player.mediaItemCount > 0,
-        playing = player.playWhenReady &&
+        // A music break is part of playing: a person's queue on a break still finishes first.
+        playing = breaks.onBreak || player.playWhenReady &&
             (player.playbackState == Player.STATE_READY || player.playbackState == Player.STATE_BUFFERING),
         ended = player.playbackState == Player.STATE_ENDED,
     )
@@ -203,5 +206,16 @@ internal class MusicScheduler(
         val TICK = SessionCommand("dev.homedj.app.SCHEDULE_TICK", Bundle.EMPTY)
         val RESUME = SessionCommand("dev.homedj.app.SCHEDULE_RESUME", Bundle.EMPTY)
         val PLAY_NEXT = SessionCommand("dev.homedj.app.PLAY_NEXT", Bundle.EMPTY)
+
+        private fun queueSlotKey(player: Player): String? =
+            if (player.mediaItemCount == 0) null
+            else player.getMediaItemAt(0).mediaMetadata.extras?.getString(SLOT_KEY)
+
+        /** A scheduled queue may only play inside its own slot instance; a person's queue always may. */
+        suspend fun queueMayPlayNow(app: Context, player: Player): Boolean {
+            val key = queueSlotKey(player) ?: return true
+            val active = SchedulePolicy.active(ScheduleStore.shared(app).read(), ZonedDateTime.now())
+            return MusicBreakPolicy.mayResume(key, active?.second)
+        }
     }
 }

@@ -37,6 +37,10 @@ data class RemoteUiState(
     val shuffle: Boolean = false,
     val volume: Int = 0,
     val casting: Boolean = false,
+    /** Samsung's break settings; null until a Samsung build that supports breaks replies. */
+    val breaks: MusicBreakSettings? = null,
+    /** Wall-clock time a running break ends, for display only. */
+    val breakResumesAt: Long? = null,
     val error: String? = null,
     val notice: String? = null,
     val browserMode: String = "catalog",
@@ -142,14 +146,16 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    fun command(action: String, percent: Int? = null) {
+    fun setBreaks(settings: MusicBreakSettings) = command("setBreaks", breaks = settings)
+
+    fun command(action: String, percent: Int? = null, breaks: MusicBreakSettings? = null) {
         val current = mutableState.value
         val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
         if (!current.connected) return
         val version = generation
         viewModelScope.launch {
             try {
-                val response = exchange(current.host, key, action, percent = percent)
+                val response = exchange(current.host, key, action, percent = percent, breaks = breaks)
                 if (version != generation) return@launch
                 if (response.optBoolean("ok")) {
                     show(response)
@@ -271,11 +277,12 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
 
     private suspend fun exchange(
         host: String, key: SecretKeySpec, command: String,
-        percent: Int? = null, id: String? = null, offset: Int? = null,
+        percent: Int? = null, id: String? = null, offset: Int? = null, breaks: MusicBreakSettings? = null,
     ): JSONObject = mutex.withLock {
         withContext(Dispatchers.IO) {
             val request = JSONObject().put("command", command)
             if (percent != null) request.put("percent", percent)
+            if (breaks != null) request.put("breaks", breaks.toJson())
             if (id != null) request.put("id", id)
             if (offset != null) request.put("offset", offset)
             RemoteChannel.exchange(host, key, request)
@@ -292,6 +299,9 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             shuffle = response.optBoolean("shuffle"),
             volume = response.optInt("volume"),
             casting = response.optBoolean("casting"),
+            breaks = response.optJSONObject("breaks")?.let(MusicBreakSettings::fromJson),
+            breakResumesAt = response.optLong("breakSeconds", 0).takeIf { it > 0 }
+                ?.let { System.currentTimeMillis() + it * 1_000 },
             error = if (mutableState.value.connected) mutableState.value.error else null,
         )
     }
