@@ -31,7 +31,7 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun RemoteServerSection(running: Boolean, ip: String, code: String, onToggle: (Boolean) -> Unit) {
-    var revealCode by rememberSaveable { mutableStateOf(false) }
+    var revealCode by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Connect your OnePlus", style = MaterialTheme.typography.titleLarge)
