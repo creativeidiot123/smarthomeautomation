@@ -45,6 +45,11 @@ internal fun RemoteControllerScreen(
     state: RemoteUiState,
     onConnect: (String, String) -> Unit,
     onCommand: (String, Int?) -> Unit,
+    onBrowsePlaylists: () -> Unit,
+    onBrowseDownloads: () -> Unit,
+    onBrowseTracks: (String) -> Unit,
+    onLoadMore: () -> Unit,
+    onLibraryAction: (String, String) -> Unit,
     onSwitch: () -> Unit,
 ) {
     var host by remember { mutableStateOf(state.host) }
@@ -107,7 +112,83 @@ internal fun RemoteControllerScreen(
                 }
             }
         }
-        Text("Audio plays only on the Samsung. Open a local audio queue there to begin.")
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Samsung music library", style = MaterialTheme.typography.titleLarge)
+                Text("Browse the playlists and songs saved by Samsung. Audio plays on its speakers.")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onBrowsePlaylists, enabled = state.connected) {
+                        Text("YouTube playlists")
+                    }
+                    OutlinedButton(onClick = onBrowseDownloads, enabled = state.connected) {
+                        Text("Saved songs")
+                    }
+                }
+                if (state.browserLoading) Text("Loading music…")
+                when (state.browserMode) {
+                    "catalog" -> {
+                        if (!state.browserLoading && state.playlists.isEmpty()) {
+                            Text("No saved playlists. Connect YouTube on Samsung and sync first.")
+                        }
+                        state.playlists.forEach { playlist ->
+                            OutlinedButton(
+                                onClick = { onBrowseTracks(playlist.id) },
+                                enabled = state.connected,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(playlist.title + " (" + playlist.count + ")") }
+                        }
+                    }
+                    else -> {
+                        if (state.browserMode == "tracks") {
+                            Text(state.selectedPlaylistTitle, style = MaterialTheme.typography.titleMedium)
+                            state.selectedPlaylistId?.let { playlistId ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { onLibraryAction("playPlaylist", playlistId) },
+                                        enabled = state.connected,
+                                    ) { Text("Play playlist") }
+                                    OutlinedButton(
+                                        onClick = { onLibraryAction("savePlaylist", playlistId) },
+                                        enabled = state.connected,
+                                    ) { Text("Save offline") }
+                                }
+                            }
+                        } else {
+                            Text("Offline songs on Samsung", style = MaterialTheme.typography.titleMedium)
+                        }
+                        if (!state.browserLoading && state.songs.isEmpty()) {
+                            Text("No songs found in this section.")
+                        }
+                        state.songs.forEach { song ->
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(song.title)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { onLibraryAction("playTrack", song.id) },
+                                        enabled = state.connected,
+                                    ) { Text(if (song.saved) "Play offline" else "Play") }
+                                    if (!song.saved) {
+                                        OutlinedButton(
+                                            onClick = { onLibraryAction("saveTrack", song.id) },
+                                            enabled = state.connected,
+                                        ) { Text("Save") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                val loaded = if (state.browserMode == "catalog") state.playlists.size else state.songs.size
+                if (loaded < state.browserTotal) {
+                    OutlinedButton(
+                        onClick = onLoadMore, enabled = state.connected && !state.browserLoading
+                    ) { Text("Show more ($loaded / ${state.browserTotal})") }
+                }
+                state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+                Text("Online songs require the Samsung's internet connection. Playback or downloads may fail if YouTube restricts a track.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
         TextButton(onClick = onSwitch, enabled = !changing) { Text("Switch to Server mode") }
     }
 }
