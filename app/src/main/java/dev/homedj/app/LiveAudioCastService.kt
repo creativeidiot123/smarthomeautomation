@@ -178,7 +178,7 @@ class LiveAudioCastService : Service() {
         private const val ACTION_STOP = "dev.homedj.app.STOP_CAST"
         private const val EXTRA_CODE = "projection_code"
         private const val EXTRA_DATA = "projection_data"
-        val state = MutableStateFlow(CastState())
+        internal val state = MutableStateFlow(CastState())
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             context.startForegroundService(
