@@ -28,6 +28,8 @@ internal fun YouTubeSection(
     onImportPlaylist: (String) -> Unit,
     onDownloadPlaylist: (String) -> Unit,
     onStreamTrack: (YouTubeTrack) -> Unit,
+    onDownloadTrack: (YouTubeTrack) -> Unit,
+    onDownloadSelected: () -> Unit,
     onAutoEnabled: (Boolean) -> Unit,
     onToggleAutoPlaylist: (String) -> Unit,
 ) {
@@ -35,7 +37,7 @@ internal fun YouTubeSection(
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("YouTube playlists", style = MaterialTheme.typography.titleLarge)
-            Text("Browse account playlists through Google or send a playlist URL to Termux for local audio downloads.")
+            Text("Browse YouTube playlists, play tracks or download audio directly to this phone.")
             OutlinedTextField(
                 value = playlistLink,
                 onValueChange = { if (it.length <= 2048) playlistLink = it },
@@ -45,12 +47,12 @@ internal fun YouTubeSection(
             )
             Button(
                 onClick = { onDownloadPlaylist(playlistLink) },
-                enabled = playlistLink.isNotBlank(),
-            ) { Text("Download playlist in Termux") }
+                enabled = state.authorized && playlistLink.isNotBlank(),
+            ) { Text("Save linked playlist offline") }
             Text(
-                "Requires Termux, yt-dlp, FFmpeg and shared-storage access on this phone. " +
-                    "Use only for media you have permission to download. " +
-                    "After completion, choose the saved files using the local audio picker.",
+                "No Termux is required. HomeDJ stores playable audio in its private storage. " +
+                    "Only save music you have permission to download. " +
+                    "Restricted or DRM-protected tracks are not supported.",
                 style = MaterialTheme.typography.bodySmall,
             )
             if (!state.authorized) {
@@ -72,8 +74,8 @@ internal fun YouTubeSection(
                         else "Enable 12-hour automatic sync (unmetered Wi-Fi)")
                 }
                 Text(
-                    "Background playlist refresh is inexact. Auto-download uses Termux only for " +
-                        "playlists you opt into below; Android may block unattended commands.",
+                    "Background playlist sync is approximate. Selected playlists use HomeDJ's " +
+                        "native download workers when on unmetered Wi-Fi.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Button(
@@ -108,16 +110,25 @@ internal fun YouTubeSection(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 if (state.tracks.isEmpty()) Text("No cached/available tracks in this playlist.")
+                if (state.tracks.isNotEmpty()) {
+                    Button(onClick = onDownloadSelected) { Text("Save selected playlist offline") }
+                }
                 state.tracks.take(50).forEachIndexed { index, track ->
                     Text((index + 1).toString() + ". " + track.title)
-                    OutlinedButton(onClick = { onStreamTrack(track) }) {
-                        Text("Stream via Termux: " + track.title)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { onStreamTrack(track) }) {
+                            Text(if (track.id in state.offlineIds) "Play offline" else "Play")
+                        }
+                        OutlinedButton(onClick = { onDownloadTrack(track) }) {
+                            Text(if (track.id in state.offlineIds) "Saved" else "Save")
+                        }
                     }
                 }
                 if (state.tracks.size > 50) {
                     Text("Showing the first 50 tracks of " + state.tracks.size + ".")
                 }
             }
+            state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }

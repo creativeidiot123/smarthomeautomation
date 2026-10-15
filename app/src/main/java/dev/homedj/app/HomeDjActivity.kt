@@ -53,23 +53,6 @@ class HomeDjActivity : ComponentActivity() {
     private val remote: RemoteControllerViewModel by viewModels()
     private var authorizationPending = false
     private var revokePending = false
-    private var pendingTermuxPlaylist: String? = null
-    private var pendingStreamTrack: YouTubeTrack? = null
-
-    private val termuxPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            val playlistId = pendingTermuxPlaylist
-            val track = pendingStreamTrack
-            pendingTermuxPlaylist = null
-            pendingStreamTrack = null
-            if (granted && roleModel.state.value.mode == HomeDjMode.SERVER) {
-                if (track != null) launchTrackStream(track)
-                else if (playlistId != null) launchTermuxDownload(playlistId)
-            } else if (!granted) {
-                downloadMessage("Grant HomeDJ permission to run Termux commands in Android app settings.")
-            }
-        }
-
     private val scopes = listOf(Scope(YOUTUBE_SCOPE))
     private val downloadReadPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -136,7 +119,7 @@ class HomeDjActivity : ComponentActivity() {
                 }
                 if (roleModel.state.value.mode != HomeDjMode.SERVER) return@launch
                 if (audio.isEmpty()) {
-                    downloadMessage("No indexed audio in Music/HomeDJ. Check Termux downloads.")
+                    downloadMessage("No previously downloaded shared audio found in Music/HomeDJ.")
                 } else {
                     playback.playPickedAudio(audio)
                     downloadMessage("Queued " + audio.size + " downloaded audio files.")
@@ -218,60 +201,29 @@ class HomeDjActivity : ComponentActivity() {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
-    private fun requestTermuxDownload(link: String) {
-        if (roleModel.state.value.mode != HomeDjMode.SERVER || pendingTermuxPlaylist != null) return
-        val playlistId = YouTubePlaylistLinks.idFromLink(link)
-        if (playlistId == null) {
-            downloadMessage("Paste a valid YouTube or YouTube Music playlist URL.")
-            return
-        }
-        if (!TermuxPlaylistDownloads.isInstalled(this)) {
-            downloadMessage("Install Termux and set up yt-dlp, FFmpeg, and storage access first.")
-            return
-        }
-        if (checkSelfPermission(TermuxPlaylistDownloads.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
-            pendingTermuxPlaylist = playlistId
-            termuxPermissionLauncher.launch(TermuxPlaylistDownloads.PERMISSION)
-            return
-        }
-        launchTermuxDownload(playlistId)
-    }
-
-    private fun requestTrackStream(track: YouTubeTrack) {
-        if (roleModel.state.value.mode != HomeDjMode.SERVER ||
-            !TermuxPlaylistDownloads.validId(track.id)) return
-        if (!TermuxPlaylistDownloads.isInstalled(this)) {
-            downloadMessage("Install Termux and yt-dlp to resolve streaming audio first.")
-            return
-        }
-        if (checkSelfPermission(TermuxPlaylistDownloads.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
-            pendingStreamTrack = track
-            termuxPermissionLauncher.launch(TermuxPlaylistDownloads.PERMISSION)
-            return
-        }
-        launchTrackStream(track)
-    }
-
-    private fun launchTrackStream(track: YouTubeTrack) {
-        val submitted = StreamResolution.request(this, track)
-        downloadMessage(
-            if (submitted) "Resolving audio in Termux. Playback starts if a stream is available."
-            else "Unable to start stream resolver. Check Termux permissions and configuration."
-        )
-    }
-
-    private fun launchTermuxDownload(playlistId: String) {
+    private fun playSavedHomeDjAudio() {
         if (roleModel.state.value.mode != HomeDjMode.SERVER) return
-        try {
-            val started = TermuxPlaylistDownloads.start(this, playlistId)
-            if (started) {
-                downloadMessage("Sent to Termux. Check its terminal for progress and errors.")
-            } else {
-                downloadMessage("Termux did not accept the command. Check its setup and permissions.")
+        val audio = OfflineAudioLibrary.allLocalMedia(this)
+        if (audio.isEmpty()) downloadMessage("No native offline songs saved yet.")
+        else playback.playPickedAudio(audio)
+    }
+
+    private fun playYouTubeTrack(track: YouTubeTrack) {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER ||
+            !NativeAudioSource.validId(track.id)) return
+        lifecycleScope.launch {
+            try {
+                val local = OfflineAudioLibrary.localMedia(this@HomeDjActivity, track)
+                val selected = local ?: withContext(Dispatchers.IO) {
+                    LocalAudio(Uri.parse(NativeAudioSource.resolve(track.id).url), track.title)
+                }
+                if (roleModel.state.value.mode == HomeDjMode.SERVER) playback.playPickedAudio(listOf(selected))
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Log.w("HomeDJ", "Native YouTube audio resolve failed: videoId=" + track.id +
+                    " type=" + error.javaClass.simpleName)
+                downloadMessage("Could not play this track. Audio may be restricted or unavailable.")
             }
-        } catch (failure: Exception) {
-            Log.w("HomeDJ", "Termux command handoff failed: " + failure.javaClass.simpleName)
-            downloadMessage("Could not start Termux. Check external-app permission and setup.")
         }
     }
 
@@ -330,7 +282,8 @@ class HomeDjActivity : ComponentActivity() {
                             onRemoteToggle = ::setRemoteEnabled,
                             changing = role.changing,
                             onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
-                            onPlayDownloads = ::requestDownloadedAudio,
+                            onPlayDownloads = ::playSavedHomeDjAudio,
+                            onPlaySharedDownloads = ::requestDownloadedAudio,
                             onPlayPause = playback::playOrPause,
                             onNext = playback::next,
                             onPrevious = playback::previous,
@@ -339,8 +292,10 @@ class HomeDjActivity : ComponentActivity() {
                             onDisconnectYouTube = ::disconnectYouTube,
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
-                            onDownloadPlaylist = ::requestTermuxDownload,
-                            onStreamTrack = ::requestTrackStream,
+                            onDownloadPlaylist = youtube::downloadPlaylistLink,
+                            onStreamTrack = ::playYouTubeTrack,
+                            onDownloadTrack = youtube::saveTrackOffline,
+                            onDownloadSelected = youtube::saveSelectedOffline,
                             onAutoEnabled = youtube::setAutoEnabled,
                             onToggleAutoPlaylist = youtube::toggleAutoPlaylist,
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
@@ -428,6 +383,7 @@ private fun ServerScreen(
     changing: Boolean,
     onPickAudio: () -> Unit,
     onPlayDownloads: () -> Unit,
+    onPlaySharedDownloads: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -438,6 +394,8 @@ private fun ServerScreen(
     onImportPlaylist: (String) -> Unit,
     onDownloadPlaylist: (String) -> Unit,
     onStreamTrack: (YouTubeTrack) -> Unit,
+    onDownloadTrack: (YouTubeTrack) -> Unit,
+    onDownloadSelected: () -> Unit,
     onAutoEnabled: (Boolean) -> Unit,
     onToggleAutoPlaylist: (String) -> Unit,
     onSwitch: () -> Unit,
@@ -474,7 +432,10 @@ private fun ServerScreen(
             Text("Choose local audio files")
         }
         Button(onClick = onPlayDownloads, enabled = status.connected && !changing) {
-            Text("Play downloaded HomeDJ music")
+            Text("Play saved HomeDJ songs (offline)")
+        }
+        OutlinedButton(onClick = onPlaySharedDownloads, enabled = status.connected && !changing) {
+            Text("Play older shared Music/HomeDJ files")
         }
         status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         YouTubeSection(
@@ -485,6 +446,8 @@ private fun ServerScreen(
             onImportPlaylist = onImportPlaylist,
             onDownloadPlaylist = onDownloadPlaylist,
             onStreamTrack = onStreamTrack,
+            onDownloadTrack = onDownloadTrack,
+            onDownloadSelected = onDownloadSelected,
             onAutoEnabled = onAutoEnabled,
             onToggleAutoPlaylist = onToggleAutoPlaylist,
         )

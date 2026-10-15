@@ -23,6 +23,8 @@ data class YouTubeUiState(
     val lastSyncedAt: Long = 0L,
     val autoEnabled: Boolean = false,
     val autoDownloadIds: Set<String> = emptySet(),
+    val offlineIds: Set<String> = emptySet(),
+    val notice: String? = null,
 )
 
 /** Screen-scoped projection; tokens, identity and metadata never leave process memory. */
@@ -75,7 +77,6 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     fun disconnectAndEraseCatalog() {
         clear()
         auto.erase()
-        StreamResolution.cancel(getApplication())
         viewModelScope.launch {
             try {
                 savedStore.erase()
@@ -200,6 +201,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                 }
                 mutableState.value = mutableState.value.copy(
                     tracks = tracks, loadingTracks = false, error = null,
+                    offlineIds = tracks.filter { OfflineAudioLibrary.existing(getApplication(), it.id) != null }
+                        .mapTo(hashSetOf()) { it.id },
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -208,6 +211,51 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                 mutableState.value = mutableState.value.copy(
                     loadingTracks = false, error = messageFor(failure),
                 )
+            }
+        }
+    }
+
+    /** User-requested offline saves are durable WorkManager jobs, independent of this screen. */
+    fun saveTrackOffline(track: YouTubeTrack) {
+        if (!NativeAudioSource.validId(track.id)) return
+        OfflineAudioLibrary.enqueue(getApplication(), track)
+        mutableState.value = mutableState.value.copy(notice = "Queued download: " + track.title)
+    }
+
+    fun saveSelectedOffline() {
+        val selected = mutableState.value
+        if (selected.selectedPlaylistId == null) return
+        val tracks = selected.tracks.filter { NativeAudioSource.validId(it.id) }
+            .distinctBy(YouTubeTrack::id).take(250)
+        tracks.forEach { OfflineAudioLibrary.enqueue(getApplication(), it) }
+        mutableState.value = mutableState.value.copy(
+            notice = "Queued " + tracks.size + " songs for offline saving.",
+        )
+    }
+
+    /** Only authenticated playlist metadata is read; media bytes come from the in-app extractor. */
+    fun downloadPlaylistLink(link: String) {
+        val id = YouTubePlaylistLinks.idFromLink(link)
+        val token = accessToken
+        if (id == null || token == null) {
+            authorizationError("Connect YouTube and paste a valid playlist link.")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val tracks = repository.tracks(token, id)
+                    .filter { NativeAudioSource.validId(it.id) }
+                    .distinctBy(YouTubeTrack::id).take(250)
+                if (accessToken != token) return@launch
+                tracks.forEach { OfflineAudioLibrary.enqueue(getApplication(), it) }
+                mutableState.value = mutableState.value.copy(
+                    notice = "Queued " + tracks.size + " songs from the linked playlist.",
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w("HomeDJ", "In-app playlist download queue failed: " + error.javaClass.simpleName)
+                authorizationError("Unable to read this playlist for offline saving.")
             }
         }
     }
