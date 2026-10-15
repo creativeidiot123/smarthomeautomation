@@ -7,6 +7,8 @@ data class PlaybackSnapshot(
     val hasTrack: Boolean = false,
     val hasNext: Boolean = false,
     val hasPrevious: Boolean = false,
+    val queueSize: Int = 0,
+    val shuffle: Boolean = false,
 ) {
     val canPlay: Boolean get() = hasTrack && !isPlaying
     val canPause: Boolean get() = hasTrack && isPlaying

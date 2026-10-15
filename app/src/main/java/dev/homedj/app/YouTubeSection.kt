@@ -1,0 +1,70 @@
+package dev.homedj.app
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+internal fun YouTubeSection(
+    state: YouTubeUiState,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onSelectPlaylist: (String) -> Unit,
+) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("YouTube playlists", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Browse your playlists and track names. YouTube audio cannot be " +
+                    "downloaded or played offline through this integration."
+            )
+            if (!state.authorized) {
+                Button(onClick = onConnect) { Text("Connect YouTube account") }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onConnect) { Text("Sync playlists") }
+                    OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                }
+                when {
+                    state.loadingPlaylists -> Text("Loading playlists…")
+                    state.playlists.isEmpty() -> Text("No playlists found for this YouTube channel.")
+                    else -> {
+                        for (playlist in state.playlists) {
+                            OutlinedButton(
+                                onClick = { onSelectPlaylist(playlist.id) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(playlist.title + " (" + playlist.itemCount + ")")
+                            }
+                        }
+                    }
+                }
+                if (state.loadingTracks) Text("Loading tracks…")
+                if (state.selectedPlaylistId != null && !state.loadingTracks) {
+                    Text(
+                        "Tracks (" + state.tracks.size + ")",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    if (state.tracks.isEmpty()) Text("No available videos in this playlist.")
+                    state.tracks.take(50).forEachIndexed { index, track ->
+                        Text((index + 1).toString() + ". " + track.title)
+                    }
+                    if (state.tracks.size > 50) {
+                        Text("Showing the first 50 tracks of " + state.tracks.size + ".")
+                    }
+                }
+            }
+            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
