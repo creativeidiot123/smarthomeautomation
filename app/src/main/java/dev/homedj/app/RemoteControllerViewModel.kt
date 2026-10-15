@@ -18,6 +18,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+data class RemotePlaylist(val id: String, val title: String, val count: Int)
+data class RemoteSong(val id: String, val title: String, val saved: Boolean)
+
 data class RemoteUiState(
     val host: String = "",
     val pairingCode: String = "",
@@ -29,9 +32,16 @@ data class RemoteUiState(
     val shuffle: Boolean = false,
     val volume: Int = 0,
     val error: String? = null,
+    val notice: String? = null,
+    val browserMode: String = "catalog",
+    val browserLoading: Boolean = false,
+    val selectedPlaylistId: String? = null,
+    val selectedPlaylistTitle: String = "",
+    val playlists: List<RemotePlaylist> = emptyList(),
+    val songs: List<RemoteSong> = emptyList(),
+    val browserTotal: Int = 0,
 )
 
-/** Controller projects the remote server's state. It never owns a local playback engine. */
 class RemoteControllerViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = RemotePrefs(application)
     private val mutableState = MutableStateFlow(
@@ -40,6 +50,8 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     val state = mutableState.asStateFlow()
     private val mutex = Mutex()
     private var connection: Job? = null
+    private var generation = 0
+    private var browseVersion = 0
 
     fun start() {
         val current = mutableState.value
@@ -50,7 +62,8 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
 
     fun connect(host: String, code: String) {
         connection?.cancel()
-        connection = null
+        val version = ++generation
+        browseVersion++
         val address = host.trim()
         val key = RemoteChannel.decodeKey(code)
         if (!RemotePrefs.validPrivateIpv4(address) || key == null) {
@@ -61,20 +74,24 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         }
         mutableState.value = RemoteUiState(host = address, pairingCode = code.trim())
         connection = viewModelScope.launch {
-            while (isActive) {
+            while (isActive && version == generation) {
                 try {
                     val response = exchange(address, key, "status")
-                    if (!response.optBoolean("ok")) {
-                        throw IllegalStateException(response.optString("error", "Server rejected request"))
-                    }
+                    if (!response.optBoolean("ok")) throw IllegalStateException("Rejected")
+                    if (version != generation) break
+                    val firstConnection = !mutableState.value.connected
                     prefs.saveClient(address, code)
                     show(response)
+                    if (firstConnection) browse("catalog")
                 } catch (failure: CancellationException) {
                     throw failure
                 } catch (failure: Exception) {
+                    if (version != generation) break
                     Log.w("HomeDJRemote", "Remote status failed: " + failure.javaClass.simpleName)
+                    browseVersion++
                     mutableState.value = mutableState.value.copy(
-                        connected = false, error = "Server unavailable or pairing code incorrect."
+                        connected = false, browserLoading = false,
+                        error = "Server unavailable or pairing code incorrect."
                     )
                 }
                 delay(2_500)
@@ -83,12 +100,14 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun command(action: String, percent: Int? = null) {
-        val state = mutableState.value
-        val key = RemoteChannel.decodeKey(state.pairingCode) ?: return
-        if (!state.connected) return
+        val current = mutableState.value
+        val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
+        if (!current.connected) return
+        val version = generation
         viewModelScope.launch {
             try {
-                val response = exchange(state.host, key, action, percent)
+                val response = exchange(current.host, key, action, percent = percent)
+                if (version != generation) return@launch
                 if (response.optBoolean("ok")) show(response)
                 else mutableState.value = mutableState.value.copy(
                     error = response.optString("error", "Remote command rejected")
@@ -96,6 +115,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Exception) {
+                if (version != generation) return@launch
                 Log.w("HomeDJRemote", "Remote command failed: " + failure.javaClass.simpleName)
                 mutableState.value = mutableState.value.copy(
                     connected = false, error = "Command failed. Check Wi-Fi connection."
@@ -104,12 +124,113 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
+    fun browsePlaylists() = browse("catalog")
+    fun browseDownloads() = browse("downloads")
+    fun browseTracks(id: String) = browse("tracks", id)
+
+    fun loadMore() {
+        val current = mutableState.value
+        if (current.browserLoading || !current.connected) return
+        val loaded = if (current.browserMode == "catalog") current.playlists.size else current.songs.size
+        if (loaded < current.browserTotal) browse(current.browserMode, current.selectedPlaylistId, loaded)
+    }
+
+    private fun browse(mode: String, id: String? = null, offset: Int = 0) {
+        val current = mutableState.value
+        val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
+        if (!current.connected) return
+        val requestVersion = ++browseVersion
+        val connectionVersion = generation
+        val selectedTitle = if (mode == "tracks")
+            current.playlists.firstOrNull { it.id == id }?.title ?: current.selectedPlaylistTitle
+            else ""
+        mutableState.value = current.copy(
+            browserMode = mode, selectedPlaylistId = if (mode == "tracks") id else null,
+            selectedPlaylistTitle = selectedTitle, browserLoading = true, error = null,
+            playlists = if (offset == 0 && mode == "catalog") emptyList() else current.playlists,
+            songs = if (offset == 0) emptyList() else current.songs,
+            browserTotal = if (offset == 0) 0 else current.browserTotal,
+        )
+        viewModelScope.launch {
+            try {
+                val response = exchange(current.host, key, mode, id = id, offset = offset)
+                if (connectionVersion != generation || requestVersion != browseVersion) return@launch
+                if (!response.optBoolean("ok")) {
+                    mutableState.value = mutableState.value.copy(
+                        browserLoading = false, error = response.optString("error", "Could not browse library")
+                    )
+                    return@launch
+                }
+                val values = response.optJSONArray("items")
+                val playlists = mutableListOf<RemotePlaylist>()
+                val songs = mutableListOf<RemoteSong>()
+                if (values != null) for (index in 0 until values.length()) {
+                    val item = values.optJSONObject(index) ?: continue
+                    if (mode == "catalog") playlists.add(RemotePlaylist(
+                        item.optString("id"), item.optString("title"), item.optInt("count")
+                    ))
+                    else songs.add(RemoteSong(
+                        item.optString("id"), item.optString("title"), item.optBoolean("saved")
+                    ))
+                }
+                val previous = mutableState.value
+                mutableState.value = previous.copy(
+                    browserLoading = false, browserTotal = response.optInt("total", 0),
+                    playlists = if (mode == "catalog")
+                        (if (offset == 0) emptyList() else previous.playlists) + playlists
+                        else previous.playlists,
+                    songs = if (mode != "catalog")
+                        (if (offset == 0) emptyList() else previous.songs) + songs
+                        else previous.songs,
+                )
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                if (connectionVersion != generation || requestVersion != browseVersion) return@launch
+                Log.w("HomeDJRemote", "Library browse failed: " + failure.javaClass.simpleName)
+                mutableState.value = mutableState.value.copy(
+                    browserLoading = false, error = "Could not browse Samsung library."
+                )
+            }
+        }
+    }
+
+    fun libraryAction(action: String, id: String) {
+        val current = mutableState.value
+        val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
+        if (!current.connected) return
+        val version = generation
+        viewModelScope.launch {
+            try {
+                val response = exchange(current.host, key, action, id = id)
+                if (version != generation) return@launch
+                mutableState.value = mutableState.value.copy(
+                    notice = if (response.optBoolean("ok"))
+                        response.optString("message", "Command accepted") else null,
+                    error = if (response.optBoolean("ok")) null
+                        else response.optString("error", "Command rejected"),
+                )
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                if (version != generation) return@launch
+                Log.w("HomeDJRemote", "Library command failed: " + failure.javaClass.simpleName)
+                mutableState.value = mutableState.value.copy(
+                    error = "Server did not confirm the command. Check connection."
+                )
+            }
+        }
+    }
+
     private suspend fun exchange(
-        host: String, key: SecretKeySpec, command: String, percent: Int? = null,
+        host: String, key: SecretKeySpec, command: String,
+        percent: Int? = null, id: String? = null, offset: Int? = null,
     ): JSONObject = mutex.withLock {
         withContext(Dispatchers.IO) {
             val request = JSONObject().put("command", command)
             if (percent != null) request.put("percent", percent)
+            if (id != null) request.put("id", id)
+            if (offset != null) request.put("offset", offset)
             RemoteChannel.exchange(host, key, request)
         }
     }
@@ -128,9 +249,11 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun stop() {
+        generation++
+        browseVersion++
         connection?.cancel()
         connection = null
-        mutableState.value = mutableState.value.copy(connected = false)
+        mutableState.value = mutableState.value.copy(connected = false, browserLoading = false)
     }
 
     override fun onCleared() {
