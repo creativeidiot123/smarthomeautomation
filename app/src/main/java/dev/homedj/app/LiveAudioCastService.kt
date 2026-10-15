@@ -35,14 +35,35 @@ import kotlinx.coroutines.launch
 
 internal data class CastState(val active: Boolean = false, val connecting: Boolean = false, val error: String? = null)
 
+/** A Stop action wins even if the blocking network job has not published its socket yet. */
+internal class CastSocketLease {
+    private var closed = false
+    private var socket: Socket? = null
+
+    @Synchronized fun attach(candidate: Socket) {
+        if (closed) {
+            candidate.close()
+            throw IOException("Audio casting already stopped")
+        }
+        socket = candidate
+    }
+
+    @Synchronized fun close() {
+        closed = true
+        socket?.close()
+        socket = null
+    }
+}
+
 /** OnePlus owns consent and capture. No recording is persisted or sent outside the paired LAN. */
 class LiveAudioCastService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var captureJob: Job? = null
-    @Volatile private var socket: Socket? = null
+    private val castSocket = CastSocketLease()
+    private val recorderLock = Any()
     @Volatile private var recorder: AudioRecord? = null
     private var projection: MediaProjection? = null
-    private var stopping = false
+    @Volatile private var stopping = false
 
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -122,17 +143,27 @@ class LiveAudioCastService : Service() {
                         .setAudioPlaybackCaptureConfig(config)
                         .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 4))
                         .build()
-                    recorder = active
+                    synchronized(recorderLock) {
+                        if (stopping) {
+                            active.release()
+                            throw IOException("Audio casting already stopped")
+                        }
+                        recorder = active
+                    }
                     if (active.state != AudioRecord.STATE_INITIALIZED) throw IOException("Capture device unavailable")
                     active.startRecording()
                     val frame = ByteArray(LiveAudioFormat.CHUNK_BYTES)
                     var started = false
-                    RemoteChannel.streamAudio(host, key, onSocket = { socket = it }) {
+                    RemoteChannel.streamAudio(host, key, onSocket = castSocket::attach) {
+                        if (stopping) throw IOException("Audio casting stopped")
                         val read = active.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
-                        if (read <= 0) throw IOException("Audio capture stopped")
+                        if (stopping || read <= 0) throw IOException("Audio capture stopped")
                         if (!started) {
-                            started = true
-                            state.value = CastState(active = true)
+                            synchronized(recorderLock) {
+                                if (stopping) throw IOException("Audio casting stopped")
+                                started = true
+                                state.value = CastState(active = true)
+                            }
                         }
                         frame.copyOf(read - read % 4).takeIf { it.isNotEmpty() }
                     }
@@ -157,13 +188,15 @@ class LiveAudioCastService : Service() {
 
     override fun onDestroy() {
         stopping = true
-        socket?.close()
-        socket = null
-        recorder?.let { source ->
-            runCatching { source.stop() }
-            source.release()
+        runCatching { castSocket.close() }
+            .onFailure { Log.w("HomeDJCast", "Cast socket shutdown failed", it) }
+        synchronized(recorderLock) {
+            recorder?.let { source ->
+                runCatching { source.stop() }
+                source.release()
+            }
+            recorder = null
         }
-        recorder = null
         projection?.unregisterCallback(callback)
         projection?.stop()
         projection = null
