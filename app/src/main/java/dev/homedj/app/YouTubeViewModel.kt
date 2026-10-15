@@ -21,12 +21,15 @@ data class YouTubeUiState(
     val error: String? = null,
     val savedSnapshot: Boolean = false,
     val lastSyncedAt: Long = 0L,
+    val autoEnabled: Boolean = false,
+    val autoDownloadIds: Set<String> = emptySet(),
 )
 
 /** Screen-scoped projection; tokens, identity and metadata never leave process memory. */
 class YouTubeViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = YouTubePlaylistRepository()
-    private val savedStore = SavedPlaylistStore(application)
+    private val savedStore = SavedPlaylistStore.shared(application)
+    private val auto = AutoLibraryConfig(application)
     private val mutableState = MutableStateFlow(YouTubeUiState())
     val state = mutableState.asStateFlow()
     private var accessToken: String? = null
@@ -36,6 +39,16 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     private var trackJob: Job? = null
 
     init { showSavedCatalog() }
+
+    fun setAutoEnabled(enabled: Boolean) {
+        auto.setEnabled(enabled)
+        mutableState.value = mutableState.value.copy(autoEnabled = enabled)
+    }
+
+    fun toggleAutoPlaylist(id: String) {
+        auto.togglePlaylist(id)
+        mutableState.value = mutableState.value.copy(autoDownloadIds = auto.playlistIds)
+    }
 
     /** Saved metadata is displayed while offline; it is not a playable media cache. */
     fun showSavedCatalog() {
@@ -47,6 +60,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                         playlists = saved.playlists,
                         savedSnapshot = true,
                         lastSyncedAt = saved.syncedAt,
+                        autoEnabled = auto.enabled,
+                        autoDownloadIds = auto.playlistIds,
                     )
                 }
             } catch (failure: Exception) {
@@ -59,6 +74,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     /** Explicit account disconnect purges stored metadata and in-memory authentication. */
     fun disconnectAndEraseCatalog() {
         clear()
+        auto.erase()
+        StreamResolution.cancel(getApplication())
         viewModelScope.launch {
             try {
                 savedStore.erase()
@@ -80,12 +97,16 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         trackJob?.cancel()
         accessToken = token
         authorizedAccount = account
-        mutableState.value = YouTubeUiState(authorized = true)
+        val accountName = account?.name
+        if (accountName.isNullOrBlank()) auto.setEnabled(false)
+        else auto.bindAccount(accountName)
+        mutableState.value = YouTubeUiState(authorized = true, autoEnabled = auto.enabled, autoDownloadIds = auto.playlistIds)
         refresh()
     }
 
     fun refresh() {
         val token = accessToken ?: return
+        val accountName = authorizedAccount?.name
         playlistJob?.cancel()
         trackJob?.cancel()
         mutableState.value = mutableState.value.copy(
@@ -98,10 +119,11 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         playlistJob = viewModelScope.launch {
             try {
                 val playlists = repository.playlists(token)
-                val saved = savedStore.replaceOwned(playlists)
+                val saved = if (accountName.isNullOrBlank()) null
+                    else savedStore.replaceOwned(accountName, playlists)
                 mutableState.value = mutableState.value.copy(
-                    playlists = saved.playlists, loadingPlaylists = false, error = null,
-                    savedSnapshot = false, lastSyncedAt = saved.syncedAt,
+                    playlists = saved?.playlists ?: playlists, loadingPlaylists = false, error = null,
+                    savedSnapshot = false, lastSyncedAt = saved?.syncedAt ?: 0L,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -122,6 +144,7 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val token = accessToken ?: return
+        val accountName = authorizedAccount?.name
         playlistJob?.cancel()
         trackJob?.cancel()
         mutableState.value = mutableState.value.copy(
@@ -138,9 +161,13 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                     )
                     return@launch
                 }
-                val saved = savedStore.importPlaylist(playlist)
+                val saved = if (accountName.isNullOrBlank()) null
+                    else savedStore.importPlaylist(accountName, playlist)
+                val matching = saved?.takeIf { it.ownerKey == SavedPlaylistStore.accountKey(accountName.orEmpty()) }
                 mutableState.value = mutableState.value.copy(
-                    playlists = saved.playlists, loadingPlaylists = false,
+                    playlists = matching?.playlists
+                        ?: (listOf(playlist) + mutableState.value.playlists).distinctBy(YouTubePlaylist::id),
+                    loadingPlaylists = false,
                 )
                 selectPlaylist(playlist.id)
             } catch (cancelled: CancellationException) {
@@ -157,6 +184,7 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     fun selectPlaylist(id: String) {
         if (mutableState.value.playlists.none { it.id == id }) return
         val token = accessToken
+        val accountName = authorizedAccount?.name
         trackJob?.cancel()
         mutableState.value = mutableState.value.copy(
             selectedPlaylistId = id, tracks = emptyList(), loadingTracks = true, error = null,
@@ -166,7 +194,9 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                 val tracks = if (token == null) {
                     savedStore.read().tracks[id].orEmpty()
                 } else {
-                    repository.tracks(token, id).also { savedStore.storeTracks(id, it) }
+                    repository.tracks(token, id).also {
+                        if (!accountName.isNullOrBlank()) savedStore.storeTracks(accountName, id, it)
+                    }
                 }
                 mutableState.value = mutableState.value.copy(
                     tracks = tracks, loadingTracks = false, error = null,

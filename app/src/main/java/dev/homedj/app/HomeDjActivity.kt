@@ -54,13 +54,17 @@ class HomeDjActivity : ComponentActivity() {
     private var authorizationPending = false
     private var revokePending = false
     private var pendingTermuxPlaylist: String? = null
+    private var pendingStreamTrack: YouTubeTrack? = null
 
     private val termuxPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             val playlistId = pendingTermuxPlaylist
+            val track = pendingStreamTrack
             pendingTermuxPlaylist = null
-            if (granted && playlistId != null && roleModel.state.value.mode == HomeDjMode.SERVER) {
-                launchTermuxDownload(playlistId)
+            pendingStreamTrack = null
+            if (granted && roleModel.state.value.mode == HomeDjMode.SERVER) {
+                if (track != null) launchTrackStream(track)
+                else if (playlistId != null) launchTermuxDownload(playlistId)
             } else if (!granted) {
                 downloadMessage("Grant HomeDJ permission to run Termux commands in Android app settings.")
             }
@@ -233,6 +237,29 @@ class HomeDjActivity : ComponentActivity() {
         launchTermuxDownload(playlistId)
     }
 
+    private fun requestTrackStream(track: YouTubeTrack) {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER ||
+            !TermuxPlaylistDownloads.validId(track.id)) return
+        if (!TermuxPlaylistDownloads.isInstalled(this)) {
+            downloadMessage("Install Termux and yt-dlp to resolve streaming audio first.")
+            return
+        }
+        if (checkSelfPermission(TermuxPlaylistDownloads.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            pendingStreamTrack = track
+            termuxPermissionLauncher.launch(TermuxPlaylistDownloads.PERMISSION)
+            return
+        }
+        launchTrackStream(track)
+    }
+
+    private fun launchTrackStream(track: YouTubeTrack) {
+        val submitted = StreamResolution.request(this, track)
+        downloadMessage(
+            if (submitted) "Resolving audio in Termux. Playback starts if a stream is available."
+            else "Unable to start stream resolver. Check Termux permissions and configuration."
+        )
+    }
+
     private fun launchTermuxDownload(playlistId: String) {
         if (roleModel.state.value.mode != HomeDjMode.SERVER) return
         try {
@@ -283,6 +310,7 @@ class HomeDjActivity : ComponentActivity() {
                         DisposableEffect(playback, youtube) {
                             playback.connect()
                             youtube.showSavedCatalog()
+                            AutoLibraryConfig(this@HomeDjActivity).schedule()
                             requestYouTubeAccess(interactive = false)
                             if (RemotePrefs(this@HomeDjActivity).enabled) setRemoteEnabled(true)
                             onDispose {
@@ -312,6 +340,9 @@ class HomeDjActivity : ComponentActivity() {
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
                             onDownloadPlaylist = ::requestTermuxDownload,
+                            onStreamTrack = ::requestTrackStream,
+                            onAutoEnabled = youtube::setAutoEnabled,
+                            onToggleAutoPlaylist = youtube::toggleAutoPlaylist,
                             onSwitch = { roleModel.select(HomeDjMode.CONTROLLER) },
                         )
                     }
@@ -406,6 +437,9 @@ private fun ServerScreen(
     onSelectPlaylist: (String) -> Unit,
     onImportPlaylist: (String) -> Unit,
     onDownloadPlaylist: (String) -> Unit,
+    onStreamTrack: (YouTubeTrack) -> Unit,
+    onAutoEnabled: (Boolean) -> Unit,
+    onToggleAutoPlaylist: (String) -> Unit,
     onSwitch: () -> Unit,
 ) {
     ScreenFrame {
@@ -450,6 +484,9 @@ private fun ServerScreen(
             onSelectPlaylist = onSelectPlaylist,
             onImportPlaylist = onImportPlaylist,
             onDownloadPlaylist = onDownloadPlaylist,
+            onStreamTrack = onStreamTrack,
+            onAutoEnabled = onAutoEnabled,
+            onToggleAutoPlaylist = onToggleAutoPlaylist,
         )
         RemoteServerSection(
             running = remoteRunning,

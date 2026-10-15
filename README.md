@@ -4,6 +4,14 @@
 
 Install the same APK on both devices. Choose **Server** on the Samsung Galaxy M21 connected to the Logitech Z623 speakers and **Controller** on the OnePlus 12. Each device persists its role independently.
 
+## Experimental: scheduled sync, downloads and track streaming
+
+On the Samsung in Server mode, connect your Google account and enable **12-hour automatic sync**. HomeDJ schedules a unique WorkManager periodic job with unmetered network and battery-not-low constraints. The actual run time is Android-controlled, never exact. The worker silently renews YouTube authorization if possible, refreshes account-scoped metadata, and skips if Google requests interactive consent.
+
+Choose **Auto-download** for individual playlists you have permission to save. Each successful background sync makes a single Termux yt-dlp handoff for up to 20 selected playlists. The download archive skips previously completed video IDs, but a successful handoff does **not** certify download completion. Android and Samsung may prevent Termux from launching in the background.
+
+Tap **Stream via Termux** beside a displayed track to resolve a temporary HTTPS GoogleVideo audio URL through yt-dlp, then play it through the **existing Media3 service**. Requires Termux >= 0.109 for callback results, RUN_COMMAND permission, and publicly accessible media supported by yt-dlp. Stale callbacks expire after 10 minutes; a new local queue cancels them. No Google OAuth tokens are given to Termux. URLs expire and playback can fail. These features are not native InnerTube streaming, not a clock-time scheduler, and not verified unattended execution.
+
 ## Current functionality (in-progress milestone)
 
 - Server mode runs one Media3 `MediaLibraryService` player, supports background playback and lock-screen media controls.
@@ -24,7 +32,7 @@ Only private IPv4 addresses are accepted, port `47188` is used, and no pairing c
 
 The playlist-link import is an independent, official YouTube Data API implementation inspired by [Metrolist](https://github.com/MetrolistGroup/Metrolist), whose GPL-3.0 source is **not copied** into HomeDJ. Metrolist's full YouTube Music streaming/offline architecture uses an unofficial InnerTube client, authenticated sessions, and download/cache infrastructure. Those components are not part of this PR.
 
-The optional Termux workflow downloads files independently of HomeDJ's YouTube Data API integration. Google authorization tokens are **never passed to Termux**. Downloading YouTube content may violate YouTube's terms and may require permission from the rights holder. Use this only where you have the necessary rights; private-use intent does not override platform terms.
+The optional Termux workflow downloads files independently of HomeDJ's YouTube Data API integration. Google authorization tokens are **never passed to Termux**. Streaming or downloading YouTube content may violate YouTube's terms and may require permission from the rights holder. Use this only where you have the necessary rights; private-use intent does not override platform terms.
 
 ## Optional Termux offline audio on Samsung
 
@@ -33,7 +41,7 @@ The optional Termux workflow downloads files independently of HomeDJ's YouTube D
 3. Run `termux-setup-storage`, grant Termux shared-storage access and enable `allow-external-apps = true` in `~/.termux/termux.properties`. Restart Termux after changing the property.
 4. Grant **HomeDJ** Android's **Run commands in Termux environment** permission under app settings (Additional permissions) when prompted. Termux must be installed for the permission to be available.
 5. In HomeDJ Server mode paste a YouTube Music playlist link and tap **Download playlist in Termux**. Termux opens a terminal to run yt-dlp and write MP3 files into `Music/HomeDJ/<playlist name>/`. This means only that a command was sent, **not** that the download succeeded. Watch Termux for errors.
-6. After completion, tap **Play downloaded HomeDJ music**. Allow music-file read access when Android asks. HomeDJ scans MediaStore for indexed audio beneath `Music/HomeDJ/` and plays the files through Media3. If indexing is delayed, retry after the system scans the files. The existing **Choose local audio files** picker remains a fallback. Download completion detection, progress reporting, automatic scheduled downloads and background refresh are not yet implemented.
+6. After completion, tap **Play downloaded HomeDJ music**. Allow music-file read access when Android asks. HomeDJ scans MediaStore for indexed audio beneath `Music/HomeDJ/` and plays the files through Media3. If indexing is delayed, retry after the system scans the files. The existing **Choose local audio files** picker remains a fallback. Download completion detection and progress reporting are not implemented. Opt-in best-effort background handoffs are available, but reliable unattended operation requires device testing.
 
 Termux may need battery optimization exceptions on Samsung devices for longer jobs. This version intentionally uses the documented Termux RUN_COMMAND intent and fixed argv, never a shell command assembled from untrusted input. See [Termux RUN_COMMAND integration instructions](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent).
 

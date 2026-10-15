@@ -5,6 +5,8 @@ import android.util.AtomicFile
 import android.util.Log
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -22,6 +24,7 @@ internal data class SavedPlaylistCatalog(
     val imported: List<YouTubePlaylist> = emptyList(),
     val tracks: Map<String, List<YouTubeTrack>> = emptyMap(),
     val syncedAt: Long = 0L,
+    val ownerKey: String? = null,
 ) {
     val playlists: List<YouTubePlaylist>
         get() = (imported + owned).distinctBy(YouTubePlaylist::id)
@@ -30,6 +33,7 @@ internal data class SavedPlaylistCatalog(
 internal object SavedPlaylistCodec {
     fun encode(catalog: SavedPlaylistCatalog): String = JSONObject()
         .put("version", 1)
+        .put("ownerKey", catalog.ownerKey ?: JSONObject.NULL)
         .put("syncedAt", catalog.syncedAt)
         .put("owned", playlistArray(catalog.owned))
         .put("imported", playlistArray(catalog.imported))
@@ -74,6 +78,7 @@ internal object SavedPlaylistCodec {
             imported = imported,
             tracks = tracks,
             syncedAt = root.optLong("syncedAt", 0L).coerceAtLeast(0),
+            ownerKey = root.optString("ownerKey").takeIf { it.length == 64 },
         )
     }
 
@@ -97,7 +102,19 @@ internal object SavedPlaylistCodec {
     }
 }
 
-internal class SavedPlaylistStore(context: Context) {
+internal class SavedPlaylistStore private constructor(context: Context) {
+    companion object {
+        internal fun accountKey(accountName: String): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(accountName.lowercase(Locale.ROOT).toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+
+        @Volatile private var instance: SavedPlaylistStore? = null
+        fun shared(context: Context): SavedPlaylistStore =
+            instance ?: synchronized(this) {
+                instance ?: SavedPlaylistStore(context.applicationContext).also { instance = it }
+            }
+    }
     private val file = AtomicFile(File(context.applicationContext.filesDir, "youtube_playlists.json"))
     private val mutex = Mutex()
     private var cache: SavedPlaylistCatalog? = null
@@ -106,19 +123,24 @@ internal class SavedPlaylistStore(context: Context) {
         mutex.withLock { snapshot() }
     }
 
-    suspend fun replaceOwned(playlists: List<YouTubePlaylist>): SavedPlaylistCatalog =
-        mutate { previous ->
-            val next = previous.copy(owned = playlists, syncedAt = System.currentTimeMillis())
-            next.copy(tracks = previous.tracks.filterKeys { id -> next.playlists.any { it.id == id } })
-        }
+    /** Reject metadata from a different Google account, including an unscoped legacy snapshot. */
+    suspend fun replaceOwned(
+        accountName: String, playlists: List<YouTubePlaylist>,
+        allowed: (SavedPlaylistCatalog) -> Boolean = { true },
+    ): SavedPlaylistCatalog = mutate(allowed = allowed) { previous ->
+        val key = accountKey(accountName)
+        val scoped = if (previous.ownerKey == key) previous else SavedPlaylistCatalog()
+        val next = scoped.copy(ownerKey = key, owned = playlists, syncedAt = System.currentTimeMillis())
+        next.copy(tracks = scoped.tracks.filterKeys { id -> next.playlists.any { it.id == id } })
+    }
 
-    suspend fun importPlaylist(playlist: YouTubePlaylist): SavedPlaylistCatalog =
-        mutate { previous ->
+    suspend fun importPlaylist(accountName: String, playlist: YouTubePlaylist): SavedPlaylistCatalog =
+        mutate(allowed = { it.ownerKey == accountKey(accountName) }) { previous ->
             previous.copy(imported = (listOf(playlist) + previous.imported).distinctBy(YouTubePlaylist::id))
         }
 
-    suspend fun storeTracks(id: String, tracks: List<YouTubeTrack>): SavedPlaylistCatalog =
-        mutate { previous ->
+    suspend fun storeTracks(accountName: String, id: String, tracks: List<YouTubeTrack>): SavedPlaylistCatalog =
+        mutate(allowed = { it.ownerKey == accountKey(accountName) }) { previous ->
             if (previous.playlists.none { it.id == id }) previous
             else previous.copy(tracks = previous.tracks + (id to tracks))
         }
@@ -130,10 +152,14 @@ internal class SavedPlaylistStore(context: Context) {
         }
     }
 
-    private suspend fun mutate(change: (SavedPlaylistCatalog) -> SavedPlaylistCatalog): SavedPlaylistCatalog =
-        withContext(Dispatchers.IO) {
+    private suspend fun mutate(
+        allowed: (SavedPlaylistCatalog) -> Boolean = { true },
+        change: (SavedPlaylistCatalog) -> SavedPlaylistCatalog,
+    ): SavedPlaylistCatalog = withContext(Dispatchers.IO) {
             mutex.withLock {
-                val next = change(snapshot())
+                val previous = snapshot()
+                if (!allowed(previous)) return@withLock previous
+                val next = change(previous)
                 val bytes = SavedPlaylistCodec.encode(next).toByteArray(Charsets.UTF_8)
                 if (bytes.size > 4_000_000) throw IOException("Playlist snapshot exceeded storage limit")
                 val output = file.startWrite()

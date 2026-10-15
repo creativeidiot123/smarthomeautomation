@@ -29,3 +29,10 @@ Google Play services and an OAuth Android app registration for this APK's signin
 ## Next boundary
 
 Remote control now has manually entered private-LAN pairing, encrypted authenticated commands and a foreground endpoint feeding the **existing** Media3 session. It still lacks NSD discovery, QR pairing and physical-device proof; Android can kill the process. The key must be treated as sensitive. Schedules, offline storage, volume policies, persistent queue and startup/reboot behavior require their own server-owned truth and platform-specific tests. No controller playback engine or duplicate scheduling authority is to be introduced.
+
+## Background playlist sync and temporary stream resolution
+
+- `AutoLibraryConfig` owns opt-in device-local policy and schedules one unique 12-hour WorkManager job (unmetered network, battery-not-low). `AutoLibraryWorker` checks Server role and silent Google authorization, then refreshes account-scoped metadata into the shared `SavedPlaylistStore`. It never launches authorization UI from background.
+- `SavedPlaylistStore.shared()` serializes foreground and worker JSON mutations in-process. Owned playlists are keyed by SHA-256 of the authorized account's name; account changes reset old cached metadata. Disconnect erases metadata and download choices.
+- On successful refresh, the worker hands up to 20 opted-in playlist URLs to one background Termux yt-dlp run. Termux owns download lifetime and storage. A handoff is not confirmation of completion; background service start restrictions apply.
+- For explicit streaming, Termux resolves a selected YouTube ID using yt-dlp `--get-url` and sends results using a one-shot mutable PendingIntent to `PlaybackService`. `StreamResolution` verifies freshness, request nonce, exit code and HTTPS GoogleVideo host; only the sole Media3 player streams. Signed URLs are neither persisted nor logged. Selecting local audio invalidates pending stream resolution.

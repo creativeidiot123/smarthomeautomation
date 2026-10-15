@@ -1,7 +1,11 @@
 package dev.homedj.app
 
 import android.os.Process
+import android.content.Intent
 import android.util.Log
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import kotlinx.coroutines.flow.first
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
@@ -56,6 +60,35 @@ class PlaybackService : MediaLibraryService() {
                     }
                 }
         }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val result = super.onStartCommand(intent, flags, startId)
+        if (intent?.action == StreamResolution.ACTION_RESULT) {
+            val title = StreamResolution.consume(this, intent)
+            if (title != null) {
+                val resolved = StreamResolution.playableUrl(intent.getBundleExtra("result"))
+                if (resolved == null) {
+                    Log.w("HomeDJStream", "Termux failed to resolve a playable audio URL")
+                } else {
+                    roleScope.launch {
+                        if (ModeStore(this@PlaybackService).mode.first() != HomeDjMode.SERVER) return@launch
+                        player?.apply {
+                            setMediaItem(
+                                MediaItem.Builder().setUri(resolved)
+                                    .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
+                                    .build()
+                            )
+                            prepare()
+                            play()
+                        }
+                    }
+                }
+            } else {
+                Log.w("HomeDJStream", "Ignored stale or unrecognized stream resolution callback")
+            }
+        }
+        return result
     }
 
     @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
