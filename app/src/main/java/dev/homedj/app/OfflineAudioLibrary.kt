@@ -53,6 +53,12 @@ internal object OfflineAudioLibrary {
             .sortedBy { it.name }
             .map { LocalAudio(Uri.fromFile(it), it.nameWithoutExtension) }
 
+    internal fun networkForDownload(accountKey: String?, playlistId: String?): NetworkType =
+        if (accountKey != null && playlistId != null) NetworkType.UNMETERED else NetworkType.CONNECTED
+
+    internal fun canTransfer(serverMode: Boolean, selectionAllowed: Boolean): Boolean =
+        serverMode && selectionAllowed
+
     fun enqueue(
         context: Context, track: YouTubeTrack, accountKey: String? = null,
         playlistId: String? = null,
@@ -65,8 +71,7 @@ internal object OfflineAudioLibrary {
             .build()
         val request = OneTimeWorkRequestBuilder<OfflineAudioWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(
-                if (accountKey != null && playlistId != null) NetworkType.UNMETERED
-                else NetworkType.CONNECTED
+                networkForDownload(accountKey, playlistId)
             ).build())
             .setInputData(params)
             .build()
@@ -159,8 +164,10 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
         val modeStore = ModeStore(applicationContext)
         val config = AutoLibraryConfig(applicationContext)
         val authorized: suspend () -> Boolean = {
-            modeStore.mode.first() == HomeDjMode.SERVER &&
-                (account == null || playlist == null || config.isDownloadCurrent(account, playlist))
+            OfflineAudioLibrary.canTransfer(
+                modeStore.mode.first() == HomeDjMode.SERVER,
+                account == null || playlist == null || config.isDownloadCurrent(account, playlist)
+            )
         }
         if (!NativeAudioSource.validId(id) || !authorized()) {
             return Result.success()
