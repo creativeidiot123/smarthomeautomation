@@ -2,6 +2,7 @@ package dev.homedj.app
 
 import android.content.Context
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.Process
 import android.util.Log
@@ -192,7 +193,8 @@ internal class MusicScheduler(
 
     private fun trackItem(id: String, title: String, extras: Bundle?): MediaItem =
         MediaItem.Builder().setUri(HomeDjMediaResolver.trackUri(id))
-            .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setExtras(extras).build())
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setExtras(extras)
+                .setArtworkUri(youTubeArtworkUrl(id)?.let(Uri::parse)).build())
             .build()
 
     private fun failure(code: Int, message: String) = SessionResult(SessionError(code, message))

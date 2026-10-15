@@ -9,16 +9,23 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.WorkQuery
 import androidx.work.WorkerParameters
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
@@ -31,6 +38,10 @@ internal object OfflineAudioLibrary {
     private const val MAX_LIBRARY_BYTES = 2L * 1024 * 1024 * 1024
     private val extensions = listOf("m4a", "webm", "opus")
     private val commitMutex = Mutex()
+    internal const val MAX_PARALLEL_TRANSFERS = 3
+    private val transfers = Semaphore(MAX_PARALLEL_TRANSFERS)
+    private const val SAVE_TAG = "homedj_offline"
+    private const val ID_TAG_PREFIX = "homedj_offline_id_"
 
     fun directory(context: Context): File = File(context.applicationContext.filesDir, "offline_audio")
     fun existing(context: Context, videoId: String): File? {
@@ -44,12 +55,22 @@ internal object OfflineAudioLibrary {
     fun localMedia(context: Context, track: YouTubeTrack): LocalAudio? =
         existing(context, track.id)?.let { LocalAudio(Uri.fromFile(it), track.title) }
 
-    fun allLocalMedia(context: Context): List<LocalAudio> =
+    fun allLocalMedia(context: Context, titles: Map<String, String> = emptyMap()): List<LocalAudio> =
         directory(context).listFiles().orEmpty()
             .filter { it.isFile && it.length() > 0 && extensions.contains(it.extension) &&
                 NativeAudioSource.validId(it.nameWithoutExtension) }
             .sortedBy { it.name }
-            .map { LocalAudio(Uri.fromFile(it), it.nameWithoutExtension) }
+            .map { LocalAudio(Uri.fromFile(it), offlineTitle(it.nameWithoutExtension, titles)) }
+
+    /** Saved songs named from the playlist catalog, so a queue shows song titles, not video IDs. */
+    suspend fun savedSongs(context: Context): List<LocalAudio> {
+        val titles = SavedPlaylistStore.shared(context).read().titles()
+        return withContext(Dispatchers.IO) { allLocalMedia(context, titles) }
+    }
+
+    /** A song no saved playlist lists any more keeps its video ID as its name. */
+    internal fun offlineTitle(videoId: String, titles: Map<String, String>): String =
+        titles[videoId] ?: videoId
 
     internal fun networkForDownload(accountKey: String?, playlistId: String?): NetworkType =
         if (accountKey != null && playlistId != null) NetworkType.UNMETERED else NetworkType.CONNECTED
@@ -91,15 +112,34 @@ internal object OfflineAudioLibrary {
                 networkForDownload(accountKey, playlistId)
             ).build())
             .setInputData(params)
+            .addTag(SAVE_TAG)
+            .addTag(ID_TAG_PREFIX + track.id)
             .build()
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
             workName(track.id, automatic), ExistingWorkPolicy.KEEP, request,
         )
     }
 
+    /**
+     * Video IDs with a manual or automatic save still queued or running, updated whenever WorkManager
+     * changes. Saves queued by a build without tags are not listed until they finish.
+     */
+    fun pendingIds(context: Context): Flow<Set<String>> =
+        WorkManager.getInstance(context.applicationContext)
+            .getWorkInfosFlow(WorkQuery.Builder.fromTags(listOf(SAVE_TAG))
+                .addStates(listOf(WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING, WorkInfo.State.BLOCKED))
+                .build())
+            .map { infos -> idsFromTags(infos.map(WorkInfo::tags)) }
+            .distinctUntilChanged()
+
+    internal fun idsFromTags(tagSets: List<Set<String>>): Set<String> =
+        tagSets.flatMapTo(hashSetOf()) { tags ->
+            tags.mapNotNull { tag -> tag.removePrefix(ID_TAG_PREFIX).takeIf { tag.startsWith(ID_TAG_PREFIX) } }
+        }
+
     internal suspend fun download(
         context: Context, id: String, automatic: Boolean, authorized: suspend () -> Boolean,
-    ): File =
+    ): File = limitedTransfer {
         withContext(Dispatchers.IO) {
             require(NativeAudioSource.validId(id))
             existing(context, id)?.let { return@withContext it }
@@ -142,6 +182,13 @@ internal object OfflineAudioLibrary {
                 throw rejected
             }
         }
+    }
+
+    /**
+     * WorkManager starts every queued save at once. Each blocking transfer holds a shared IO thread,
+     * so a large playlist would starve DataStore and the UI; the rest wait here without a thread.
+     */
+    internal suspend fun <T> limitedTransfer(block: suspend () -> T): T = transfers.withPermit { block() }
 }
 
 class OfflineAudioWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {

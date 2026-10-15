@@ -54,4 +54,13 @@ class NativeAudioSourceTest {
         assertEquals(listOf("com.google.ios.youtube"), client["user-agent"])
         assertFalse(client.containsKey("User-Agent"))
     }
+
+    @Test fun linkedPlaylistSongsTakeOnlyTheWatchParameter() {
+        assertEquals("dQw4w9WgXcQ", NativeAudioSource.idFromWatchUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ",
+            NativeAudioSource.idFromWatchUrl("https://www.youtube.com/watch?list=PL1&v=dQw4w9WgXcQ&index=2"))
+        assertEquals(null, NativeAudioSource.idFromWatchUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQx"))
+        assertEquals(null, NativeAudioSource.idFromWatchUrl("https://www.youtube.com/watch?vv=dQw4w9WgXcQ"))
+        assertEquals(null, NativeAudioSource.idFromWatchUrl("https://www.youtube.com/channel/UC123"))
+    }
 }

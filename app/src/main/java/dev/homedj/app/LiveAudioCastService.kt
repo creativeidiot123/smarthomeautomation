@@ -154,7 +154,8 @@ class LiveAudioCastService : Service() {
                     val active = AudioRecord.Builder()
                         .setAudioFormat(format)
                         .setAudioPlaybackCaptureConfig(config)
-                        .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 4))
+                        // Half a second of capture survives a Wi-Fi stall without losing audio.
+                        .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 25))
                         .build()
                     synchronized(recorderLock) {
                         if (stopping) {

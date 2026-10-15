@@ -70,6 +70,7 @@ internal class ScheduleViewModel(application: Application) : AndroidViewModel(ap
                 val slots = store.mutate(change)
                 mutableState.value = mutableState.value.copy(
                     slots = slots, saving = false, revision = mutableState.value.revision + 1)
+                RemoteActivity.record(RemoteActivity.SAMSUNG, "Schedule updated")
                 // PlaybackService re-arms its alarm and starts or pauses to match the new schedule.
                 ScheduleAlarms.tickNow(getApplication())
             } catch (cancelled: CancellationException) {

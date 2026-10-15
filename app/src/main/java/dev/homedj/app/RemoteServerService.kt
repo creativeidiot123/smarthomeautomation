@@ -56,7 +56,10 @@ class RemoteServerService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
 
     private fun stopCast() {
-        castSocket.getAndSet(null)?.close()
+        castSocket.getAndSet(null)?.let {
+            it.close()
+            RemoteActivity.record(RemoteActivity.ONEPLUS, "Live audio stopped")
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -153,7 +156,9 @@ class RemoteServerService : Service() {
                         Log.w("HomeDJRemote", "LAN session ended: " + failure.javaClass.simpleName)
                     } finally {
                         handshake.cancel()
-                        castSocket.compareAndSet(client, null)
+                        if (castSocket.compareAndSet(client, null)) {
+                            RemoteActivity.record(RemoteActivity.ONEPLUS, "Live audio ended")
+                        }
                         clients.remove(client)
                         connections.release()
                     }
@@ -191,23 +196,51 @@ class RemoteServerService : Service() {
                     return@withContext JSONObject().put("ok", false).put("error", "Another cast is running")
                 }
                 active.pause()
+                RemoteActivity.record(RemoteActivity.ONEPLUS, "Live audio started")
                 return@withContext JSONObject().put("ok", true)
+            }
+            // Newer controllers send the index they showed; a skip aimed at an older song is refused.
+            if (action in setOf("next", "previous") && isStaleSkip(
+                    if (request.has("index")) request.optInt("index") else null, active.currentMediaItemIndex)
+            ) {
+                return@withContext JSONObject().put("ok", false).put("error", STALE_SONG)
             }
             if (action in setOf("playTrack", "playPlaylist", "playPause", "next", "previous")) {
                 stopCast()
             }
             if (action in setOf("catalog", "tracks", "downloads", "playTrack", "playPlaylist",
-                    "saveTrack", "savePlaylist")) {
-                return@withContext musicLibrary.handle(request, active)
+                    "saveTrack", "savePlaylist", "importPlaylist")) {
+                return@withContext musicLibrary.handle(request, active).also { reply ->
+                    if (reply.optBoolean("ok") && action !in setOf("catalog", "tracks", "downloads")) {
+                        RemoteActivity.record(RemoteActivity.ONEPLUS, reply.optString("message", action))
+                    }
+                }
             }
-            when (action) {
-                "status" -> Unit
-                // Pause also cancels a buffering start; play re-prepares after an error.
-                "playPause" -> if (active.currentMediaItem != null) Util.handlePlayPauseButtonAction(active)
-                    else return@withContext JSONObject().put("ok", false).put("error", "No audio queued on server")
-                "next" -> active.seekToNextMediaItem()
-                "previous" -> active.seekToPreviousMediaItem()
-                "shuffle" -> active.shuffleModeEnabled = !active.shuffleModeEnabled
+            val change = when (action) {
+                "status" -> null
+                // Pause also cancels a buffering start; play re-prepares after an error. Newer
+                // controllers send the state they want, so a tap on a stale screen cannot undo
+                // a change made on Samsung; older ones send nothing and toggle.
+                "playPause" -> {
+                    if (active.currentMediaItem == null) {
+                        return@withContext JSONObject().put("ok", false).put("error", "No audio queued on server")
+                    }
+                    val playing = !Util.shouldShowPlayButton(active)
+                    val want = wantsPlaying(if (request.has("play")) request.optBoolean("play") else null, playing)
+                    if (want != playing) Util.handlePlayPauseButtonAction(active)
+                    when {
+                        want == playing -> if (want) "Play (already playing)" else "Pause (already paused)"
+                        want -> "Play"
+                        else -> "Pause"
+                    }
+                }
+                "next" -> { active.seekToNextMediaItem(); "Next song" }
+                "previous" -> { active.seekToPreviousMediaItem(); "Previous song" }
+                "shuffle" -> {
+                    active.shuffleModeEnabled =
+                        if (request.has("on")) request.optBoolean("on") else !active.shuffleModeEnabled
+                    if (active.shuffleModeEnabled) "Shuffle on" else "Shuffle off"
+                }
                 "volume" -> {
                     val percent = request.optInt("percent", -1)
                     if (percent !in 0..100) {
@@ -216,15 +249,18 @@ class RemoteServerService : Service() {
                     val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                     audio.setStreamVolume(AudioManager.STREAM_MUSIC, (max * percent + 50) / 100, 0)
+                    "Volume $percent%"
                 }
                 "setBreaks" -> {
                     val next = request.optJSONObject("breaks")?.let(MusicBreakSettings::fromJson)
                     if (next == null || !MusicBreakStore(this@RemoteServerService).save(next)) {
                         return@withContext JSONObject().put("ok", false).put("error", "Invalid break settings")
                     }
+                    breaksActivityText(next)
                 }
                 else -> return@withContext JSONObject().put("ok", false).put("error", "Unknown command")
             }
+            change?.let { RemoteActivity.record(RemoteActivity.ONEPLUS, it) }
             val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             JSONObject()
@@ -240,6 +276,10 @@ class RemoteServerService : Service() {
                 .put("breaks", MusicBreakStore(this@RemoteServerService).read().toJson())
                 .put("breakSeconds", MusicBreakPolicy.secondsLeft(
                     MusicBreaks.resumeAt.value, SystemClock.elapsedRealtime()))
+                // Optional fields; older controllers ignore them.
+                .put("index", active.currentMediaItemIndex)
+                .put("library", SavedPlaylistStore.shared(this@RemoteServerService).revision.value)
+                .put("activity", RemoteActivity.toJson(RemoteActivity.entries.value, System.currentTimeMillis()))
         }
 
     override fun onDestroy() {
@@ -258,6 +298,7 @@ class RemoteServerService : Service() {
 
     companion object {
         private const val HANDSHAKE_MILLIS = 8_000L
+        internal const val STALE_SONG = "Song already changed on Samsung"
         val running = MutableStateFlow(false)
         fun setEnabled(context: Context, enabled: Boolean) {
             val app = context.applicationContext
@@ -275,3 +316,9 @@ class RemoteServerService : Service() {
     }
 }
 
+/** A controller's explicit Play/Pause wins; an older controller sends none and toggles. */
+internal fun wantsPlaying(requested: Boolean?, playing: Boolean): Boolean = requested ?: !playing
+
+/** A skip aimed at a song Samsung already left is refused instead of skipping a second song. */
+internal fun isStaleSkip(requestedIndex: Int?, currentIndex: Int): Boolean =
+    requestedIndex != null && requestedIndex != currentIndex

@@ -243,16 +243,21 @@ class HomeDjActivity : ComponentActivity() {
 
     private fun playSavedHomeDjAudio() {
         if (roleModel.state.value.mode != HomeDjMode.SERVER) return
-        val audio = OfflineAudioLibrary.allLocalMedia(this)
-        if (audio.isEmpty()) downloadMessage("No native offline songs saved yet.")
-        else playback.playPickedAudio(audio)
+        lifecycleScope.launch {
+            val audio = OfflineAudioLibrary.savedSongs(this@HomeDjActivity)
+            if (roleModel.state.value.mode != HomeDjMode.SERVER) return@launch
+            if (audio.isEmpty()) downloadMessage("No native offline songs saved yet.")
+            else playback.playPickedAudio(audio)
+        }
     }
 
-    private fun playYouTubeTrack(track: YouTubeTrack) {
-        if (roleModel.state.value.mode != HomeDjMode.SERVER ||
-            !NativeAudioSource.validId(track.id)) return
-        // PlaybackService resolves the stream when the item loads; failures surface as player errors.
-        playback.playPickedAudio(listOf(LocalAudio(HomeDjMediaResolver.trackUri(track.id), track.title)))
+    /** Queues the shown playlist from the tapped song, so next and previous move through it. */
+    private fun playYouTubeTrack(playlist: List<YouTubeTrack>, track: YouTubeTrack) {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER) return
+        val queue = playlistQueue(playlist, track.id) ?: return
+        // PlaybackService resolves each stream when its item loads; failures surface as player errors.
+        playback.playPickedAudio(
+            queue.tracks.map { LocalAudio(HomeDjMediaResolver.trackUri(it.id), it.title) }, queue.start)
     }
 
     private fun disconnectYouTube() {
@@ -309,6 +314,7 @@ class HomeDjActivity : ComponentActivity() {
                         // Cached song counts change whenever Library syncs playlists or their songs.
                         LaunchedEffect(youtubeState.playlists, youtubeState.tracks) { schedule.load() }
                         val remoteRunning by RemoteServerService.running.collectAsStateWithLifecycle()
+                        val activity by RemoteActivity.entries.collectAsStateWithLifecycle()
                         val remoteAddress = remember(remoteRunning) { RemotePrefs.localAddress(this@HomeDjActivity) }
                         val pairingCode = remember { RemotePrefs(this@HomeDjActivity).serverKey() }
                         ServerScreen(
@@ -331,7 +337,7 @@ class HomeDjActivity : ComponentActivity() {
                             onSelectPlaylist = youtube::selectPlaylist,
                             onImportPlaylist = youtube::importPlaylist,
                             onDownloadPlaylist = youtube::downloadPlaylistLink,
-                            onStreamTrack = ::playYouTubeTrack,
+                            onStreamTrack = { playYouTubeTrack(youtubeState.tracks, it) },
                             onDownloadTrack = youtube::saveTrackOffline,
                             onDownloadSelected = youtube::saveSelectedOffline,
                             onAutoEnabled = youtube::setAutoEnabled,
@@ -348,6 +354,7 @@ class HomeDjActivity : ComponentActivity() {
                             breakSettings = breakSettings,
                             breakResumesAt = breakResumesAt,
                             onBreaks = playback::setBreaks,
+                            activity = activity,
                         )
                     }
                     role.mode == HomeDjMode.CONTROLLER -> {
@@ -372,6 +379,7 @@ class HomeDjActivity : ComponentActivity() {
                             onBrowseTracks = remote::browseTracks,
                             onLoadMore = remote::loadMore,
                             onLibraryAction = remote::libraryAction,
+                            onImportLink = remote::importPlaylistLink,
                             onBreaks = remote::setBreaks,
                             onSwitch = {
                                 LiveAudioCastService.stop(this@HomeDjActivity)

@@ -32,7 +32,10 @@ internal object RemoteChannel {
         return decoded?.takeIf { it.size == 32 }?.let { SecretKeySpec(it, "AES") }
     }
 
-    fun exchange(address: String, key: SecretKeySpec, request: JSONObject): JSONObject =
+    /** [replyTimeoutMillis] bounds Samsung's work on the request, e.g. reading a playlist online. */
+    fun exchange(
+        address: String, key: SecretKeySpec, request: JSONObject, replyTimeoutMillis: Int = 5_000,
+    ): JSONObject =
         Socket().use { socket ->
             socket.connect(InetSocketAddress(address, PORT), 3_000)
             socket.soTimeout = 5_000
@@ -40,6 +43,7 @@ internal object RemoteChannel {
             val output = DataOutputStream(socket.getOutputStream())
             val challenge = ByteArray(16).also { input.readFully(it) }
             send(output, key, challenge, request)
+            socket.soTimeout = replyTimeoutMillis
             receive(input, key, challenge)
         }
 

@@ -6,7 +6,10 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ShuffleOrder
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -243,8 +246,31 @@ internal class MusicBreaks(
 /**
  * The session's view of the player, so controller, notification and media-button play/pause reach
  * [MusicBreaks]. Pause goes first so full volume is restored only once the audio has stopped.
+ * A skip after a failed track re-prepares, since a seek alone leaves an errored player idle.
  */
-internal class UserCommandPlayer(player: Player, private val breaks: MusicBreaks) : ForwardingPlayer(player) {
+internal class UserCommandPlayer(
+    private val player: ExoPlayer, private val breaks: MusicBreaks,
+) : ForwardingPlayer(player) {
+    /** A tapped song in a shuffled queue plays first; Media3 would start it mid order and skip the songs before it. */
+    override fun setMediaItems(mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long) {
+        super.setMediaItems(mediaItems, startIndex, startPositionMs)
+        if (player.shuffleModeEnabled && startIndex in 0 until player.mediaItemCount) {
+            player.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(
+                shuffleOrderStartingAt(player.mediaItemCount, startIndex, Random.Default), Random.nextLong()))
+        }
+    }
+
+    override fun seekToNext() = super.seekToNext().also { prepareAfterError() }
+    override fun seekToPrevious() = super.seekToPrevious().also { prepareAfterError() }
+    override fun seekToNextMediaItem() = super.seekToNextMediaItem().also { prepareAfterError() }
+    override fun seekToPreviousMediaItem() = super.seekToPreviousMediaItem().also { prepareAfterError() }
+    override fun seekToDefaultPosition(mediaItemIndex: Int) =
+        super.seekToDefaultPosition(mediaItemIndex).also { prepareAfterError() }
+
+    private fun prepareAfterError() {
+        if (player.playerError != null) player.prepare()
+    }
+
     override fun play() {
         breaks.onUserPlay()
         super.play()

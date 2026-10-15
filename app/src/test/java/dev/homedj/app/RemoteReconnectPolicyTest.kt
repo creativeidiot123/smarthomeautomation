@@ -7,8 +7,8 @@ import org.junit.Test
 
 class RemoteReconnectPolicyTest {
     @Test fun healthyPollingIsLessFrequent() {
-        assertEquals(6_000L, statusRetryDelayMillis(0))
-        assertEquals(6_000L, statusRetryDelayMillis(-1))
+        assertEquals(3_000L, statusRetryDelayMillis(0))
+        assertEquals(3_000L, statusRetryDelayMillis(-1))
     }
 
     @Test fun failuresBackOffAndCapWithoutOverflow() {
@@ -33,5 +33,11 @@ class RemoteReconnectPolicyTest {
         val tracks = RemoteUiState(browserMode = "tracks", selectedPlaylistId = "PL1")
         assertTrue(tracks.needsBrowse())
         assertFalse(tracks.copy(songs = listOf(RemoteSong("dQw4w9WgXcQ", "Song", false))).needsBrowse())
+    }
+
+    @Test fun olderSamsungAsksForAnUpdateInsteadOfAnUnknownCommand() {
+        assertEquals("Update HomeDJ on Samsung to add playlist links.", importLinkError("Unknown command"))
+        assertEquals("Samsung could not add this playlist.", importLinkError(""))
+        assertEquals("Not a YouTube playlist link", importLinkError("Not a YouTube playlist link"))
     }
 }

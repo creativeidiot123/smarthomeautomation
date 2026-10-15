@@ -8,6 +8,10 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -28,6 +32,16 @@ internal data class SavedPlaylistCatalog(
 ) {
     val playlists: List<YouTubePlaylist>
         get() = (imported + owned).distinctBy(YouTubePlaylist::id)
+
+    /** Video ID to song title across every cached playlist. */
+    fun titles(): Map<String, String> =
+        tracks.values.asSequence().flatten().associate { it.id to it.title }
+
+    /** Newest link first; adding a link again refreshes its songs. */
+    fun withPublic(linked: LinkedPlaylist): SavedPlaylistCatalog = copy(
+        imported = (listOf(linked.playlist) + imported).distinctBy(YouTubePlaylist::id),
+        tracks = tracks + (linked.playlist.id to linked.tracks),
+    )
 }
 
 internal object SavedPlaylistCodec {
@@ -118,6 +132,12 @@ internal class SavedPlaylistStore private constructor(context: Context) {
     private val file = AtomicFile(File(context.applicationContext.filesDir, "youtube_playlists.json"))
     private val mutex = Mutex()
     private var cache: SavedPlaylistCatalog? = null
+    private val changes = MutableStateFlow(System.currentTimeMillis())
+    /**
+     * Bumped after every committed change, so screens on both phones re-read the catalog. Starting
+     * from wall-clock time keeps it from repeating an older value after a process restart.
+     */
+    val revision: StateFlow<Long> = changes.asStateFlow()
 
     suspend fun read(): SavedPlaylistCatalog = withContext(Dispatchers.IO) {
         mutex.withLock { snapshot() }
@@ -139,6 +159,10 @@ internal class SavedPlaylistStore private constructor(context: Context) {
             previous.copy(imported = (listOf(playlist) + previous.imported).distinctBy(YouTubePlaylist::id))
         }
 
+    /** A public link read without a token joins the current snapshot; disconnect still erases it. */
+    suspend fun importPublic(linked: LinkedPlaylist): SavedPlaylistCatalog =
+        mutate { it.withPublic(linked) }
+
     suspend fun storeTracks(accountName: String, id: String, tracks: List<YouTubeTrack>): SavedPlaylistCatalog =
         mutate(allowed = { it.ownerKey == accountKey(accountName) }) { previous ->
             if (previous.playlists.none { it.id == id }) previous
@@ -149,6 +173,7 @@ internal class SavedPlaylistStore private constructor(context: Context) {
         mutex.withLock {
             file.delete()
             cache = SavedPlaylistCatalog()
+            changes.update { it + 1 }
         }
     }
 
@@ -171,6 +196,7 @@ internal class SavedPlaylistStore private constructor(context: Context) {
                     throw failure
                 }
                 cache = next
+                changes.update { it + 1 }
                 next
             }
         }

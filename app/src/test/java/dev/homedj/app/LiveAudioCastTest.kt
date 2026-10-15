@@ -33,6 +33,15 @@ class LiveAudioCastTest {
         assertTrue(late.isClosed)
     }
 
+    @Test fun sinkAbsorbsWifiJitterButCapsLatency() {
+        // A 300 ms burst after a stall is kept (the old 160 ms buffer dropped it); 400 ms is the cap.
+        assertTrue(LiveAudioSink.keepsPacket(0))
+        assertTrue(LiveAudioSink.keepsPacket(LiveAudioFormat.SAMPLE_RATE * 3 / 10))
+        assertFalse(LiveAudioSink.keepsPacket(LiveAudioFormat.SAMPLE_RATE * 2 / 5))
+        // The written-minus-played difference stays exact when both counters wrap.
+        assertTrue(LiveAudioSink.keepsPacket(Int.MIN_VALUE + 100 - (Int.MAX_VALUE - 100)))
+    }
+
     @Test fun onlyAlignedBoundedPcmPacketsAreAccepted() {
         assertTrue(LiveAudioFormat.validPacket(4))
         assertTrue(LiveAudioFormat.validPacket(LiveAudioFormat.CHUNK_BYTES))

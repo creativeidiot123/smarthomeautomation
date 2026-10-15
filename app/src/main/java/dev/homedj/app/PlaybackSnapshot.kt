@@ -9,4 +9,6 @@ data class PlaybackSnapshot(
     val hasPrevious: Boolean = false,
     val queueSize: Int = 0,
     val shuffle: Boolean = false,
+    /** Thumbnail of the current song from its Media3 metadata; null for local files. */
+    val artworkUrl: String? = null,
 )

@@ -62,10 +62,10 @@ internal fun ScheduleStatusCard(status: ServerPlaybackUiState, hasSlots: Boolean
 @Composable
 internal fun UpNextSection(upNext: List<QueueEntry>, onJump: (Int) -> Unit) {
     if (upNext.isEmpty()) return
-    Text("Up next", style = MaterialTheme.typography.titleMedium)
-    upNext.forEach { entry ->
-        TextButton(onClick = { onJump(entry.index) }, modifier = Modifier.fillMaxWidth()) {
-            Text(entry.title, modifier = Modifier.fillMaxWidth(), maxLines = 1)
+    SectionTitle("Up next")
+    Column {
+        upNext.forEach { entry ->
+            SongRow(entry.title, entry.artworkUrl, onClick = { onJump(entry.index) })
         }
     }
 }
@@ -74,7 +74,6 @@ internal fun UpNextSection(upNext: List<QueueEntry>, onJump: (Int) -> Unit) {
 internal fun ScheduleSection(
     state: ScheduleUiState,
     playlists: List<YouTubePlaylist>,
-    canImport: Boolean,
     onImportPlaylist: (String) -> Unit,
     onSave: (id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>) -> Unit,
     onDelete: (String) -> Unit,
@@ -131,7 +130,6 @@ internal fun ScheduleSection(
             slot = state.slots.firstOrNull { it.id == editing },
             state = state,
             playlists = playlists,
-            canImport = canImport,
             onImportPlaylist = onImportPlaylist,
             onSave = onSave,
             onDelete = onDelete,
@@ -145,7 +143,6 @@ private fun SlotEditor(
     slot: ScheduleSlot?,
     state: ScheduleUiState,
     playlists: List<YouTubePlaylist>,
-    canImport: Boolean,
     onImportPlaylist: (String) -> Unit,
     onSave: (id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>) -> Unit,
     onDelete: (String) -> Unit,
@@ -171,7 +168,7 @@ private fun SlotEditor(
                 Slider(value = volume, onValueChange = { volume = it }, valueRange = 0f..100f, steps = 19,
                     modifier = Modifier.semantics { contentDescription = "Slot volume" })
                 Text("Playlists", style = MaterialTheme.typography.titleSmall)
-                if (playlists.isEmpty()) Text("No playlists yet. Connect YouTube in Library.")
+                if (playlists.isEmpty()) Text("No playlists yet. Add a playlist link below.")
                 playlists.forEach { playlist ->
                     val checked = playlist.id in chosen
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -187,16 +184,11 @@ private fun SlotEditor(
                         }
                     }
                 }
-                if (canImport) {
-                    OutlinedTextField(value = link, onValueChange = { if (it.length <= 2048) link = it },
-                        label = { Text("Add a YouTube playlist link") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth())
-                    TextButton(onClick = { onImportPlaylist(link); link = "" }, enabled = link.isNotBlank()) {
-                        Text("Add link to playlists")
-                    }
-                } else {
-                    Text("Connect YouTube in Library to add playlist links.",
-                        style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(value = link, onValueChange = { if (it.length <= 2048) link = it },
+                    label = { Text("Add a YouTube playlist link") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = { onImportPlaylist(link); link = "" }, enabled = link.isNotBlank()) {
+                    Text("Add link to playlists")
                 }
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }

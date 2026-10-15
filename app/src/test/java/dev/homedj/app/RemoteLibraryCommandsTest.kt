@@ -24,4 +24,9 @@ class RemoteLibraryCommandsTest {
         assertTrue(RemoteLibraryCommands.validOffset(5_000))
         assertFalse(RemoteLibraryCommands.validOffset(5_001))
     }
+
+    @Test fun songsFromAnAddedLinkBecomePlayableFromTheOnePlus() {
+        val linked = LinkedPlaylist(YouTubePlaylist("PL_Link", "Party", 1), listOf(YouTubeTrack(other, "Other")))
+        assertTrue(RemoteLibraryCommands.isTrackAllowed(catalog.withPublic(linked), other, false))
+    }
 }

@@ -8,6 +8,8 @@ import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.Page
+import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
@@ -16,12 +18,16 @@ import org.schabi.newpipe.extractor.exceptions.ContentNotSupportedException
 import org.schabi.newpipe.extractor.exceptions.ExtractionException
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.exceptions.SignInConfirmNotBotException
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
 
 /** YouTube refuses this track (private, restricted, DRM-only, bot check); retrying soon will not help. */
 internal class TrackUnavailableException(message: String) : IOException(message)
+
+/** A public playlist read by link: its metadata and the songs that have valid video IDs. */
+internal data class LinkedPlaylist(val playlist: YouTubePlaylist, val tracks: List<YouTubeTrack>)
 
 /** Resolves public audio in-process, without account cookies, shell commands, or an external app. */
 internal object NativeAudioSource {
@@ -36,6 +42,10 @@ internal object NativeAudioSource {
     internal val STREAM_POST_BODY = byteArrayOf(0x78, 0)
 
     fun validId(id: String) = videoIdPattern.matches(id)
+
+    /** The extractor lists songs as watch URLs; only the `v` parameter names the song. */
+    internal fun idFromWatchUrl(url: String): String? =
+        Regex("[?&]v=([A-Za-z0-9_-]{11})(?:&|$)").find(url)?.groupValues?.get(1)
 
     /** No signed media URL is written to disk or included in diagnostic logging. */
     internal fun acceptedCdnUrl(value: String): Boolean {
@@ -169,4 +179,38 @@ internal object NativeAudioSource {
         val chosen = candidates.first { it.content == preferred.first }
         return Link(chosen.content, chosen.format?.suffix ?: "m4a", chosen.itag)
     }
+
+    /**
+     * Reads a public or unlisted playlist without an account, for a Samsung with no YouTube
+     * token or a link sent from the OnePlus. Null when YouTube says it is private or gone.
+     */
+    suspend fun playlist(id: String): LinkedPlaylist? = withContext(Dispatchers.IO) {
+        initialize()
+        val url = "https://www.youtube.com/playlist?list=$id"
+        try {
+            val info = PlaylistInfo.getInfo(ServiceList.YouTube, url)
+            val items = info.relatedItems.toMutableList()
+            var next = info.nextPage
+            var pages = 1
+            while (Page.isValid(next) && items.size < MAX_LINKED_TRACKS && pages < MAX_LINKED_PAGES) {
+                val more = PlaylistInfo.getMoreItems(ServiceList.YouTube, url, next)
+                items += more.items
+                next = more.nextPage
+                pages++
+            }
+            val tracks = items.mapNotNull { item ->
+                val songId = idFromWatchUrl(item.url ?: "") ?: return@mapNotNull null
+                YouTubeTrack(songId, (item.name ?: "").ifBlank { songId }.take(300))
+            }.distinctBy(YouTubeTrack::id).take(MAX_LINKED_TRACKS)
+            val title = (info.name ?: "").ifBlank { "YouTube playlist" }.take(300)
+            LinkedPlaylist(YouTubePlaylist(id, title, tracks.size), tracks)
+        } catch (gone: ContentNotAvailableException) {
+            null
+        } catch (failure: ExtractionException) {
+            throw IOException("Playlist extraction failed: " + failure.javaClass.simpleName)
+        }
+    }
+
+    private const val MAX_LINKED_TRACKS = 500
+    private const val MAX_LINKED_PAGES = 8
 }

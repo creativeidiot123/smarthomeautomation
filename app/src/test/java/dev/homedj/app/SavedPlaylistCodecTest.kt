@@ -44,4 +44,24 @@ class SavedPlaylistCodecTest {
         )
         assertEquals(emptyMap<String, List<YouTubeTrack>>(), parsed.tracks)
     }
+
+    @Test fun publicLinkImportIsKeptFirstAndSurvivesRestore() {
+        val key = SavedPlaylistStore.accountKey("someone@example.com")
+        val before = SavedPlaylistCatalog(
+            owned = listOf(YouTubePlaylist("PL_Own", "Home", 1)),
+            tracks = mapOf("PL_Own" to listOf(YouTubeTrack("dQw4w9WgXcQ", "Song"))),
+            ownerKey = key,
+        )
+        val linked = LinkedPlaylist(YouTubePlaylist("PL_Link", "Party", 1),
+            listOf(YouTubeTrack("kJQP7kiw5Fk", "Despacito")))
+        val after = SavedPlaylistCodec.decode(SavedPlaylistCodec.encode(before.withPublic(linked)))
+        assertEquals(listOf("PL_Link", "PL_Own"), after.playlists.map(YouTubePlaylist::id))
+        assertEquals(linked.tracks, after.tracks["PL_Link"])
+        assertEquals(before.tracks["PL_Own"], after.tracks["PL_Own"])
+        assertEquals(key, after.ownerKey)
+
+        val refreshed = after.withPublic(linked.copy(tracks = emptyList()))
+        assertEquals(1, refreshed.imported.size)
+        assertEquals(emptyList<YouTubeTrack>(), refreshed.tracks["PL_Link"])
+    }
 }

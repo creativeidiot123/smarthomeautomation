@@ -11,7 +11,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class YouTubeUiState(
@@ -27,6 +32,8 @@ data class YouTubeUiState(
     val autoEnabled: Boolean = false,
     val autoDownloadIds: Set<String> = emptySet(),
     val offlineIds: Set<String> = emptySet(),
+    /** Saves still queued or running on this phone, live from WorkManager. */
+    val savingIds: Set<String> = emptySet(),
     val notice: String? = null,
 )
 
@@ -36,14 +43,54 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     private val savedStore = SavedPlaylistStore.shared(application)
     private val auto = AutoLibraryConfig(application)
     private val mutableState = MutableStateFlow(YouTubeUiState())
-    val state = mutableState.asStateFlow()
+    private val savingIds = OfflineAudioLibrary.pendingIds(application)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+    val state: StateFlow<YouTubeUiState> = combine(mutableState, savingIds) { ui, saving ->
+        ui.copy(savingIds = saving)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, mutableState.value)
     private var accessToken: String? = null
     var authorizedAccount: Account? = null
         private set
     private var playlistJob: Job? = null
     private var trackJob: Job? = null
 
-    init { showSavedCatalog() }
+    init {
+        showSavedCatalog()
+        // A playlist added from the OnePlus (or a worker) appears here without reopening the screen.
+        viewModelScope.launch { savedStore.revision.drop(1).collect { reloadSavedPlaylists() } }
+        viewModelScope.launch { showFinishedSaves() }
+    }
+
+    /** A shown song whose save left WorkManager's pending set turns "Saved" once its file exists. */
+    private suspend fun showFinishedSaves() {
+        var before = emptySet<String>()
+        savingIds.collect { now ->
+            val finished = before - now
+            before = now
+            if (finished.isEmpty()) return@collect
+            val shown = mutableState.value.tracks.mapTo(hashSetOf(), YouTubeTrack::id)
+            val saved = withContext(Dispatchers.IO) {
+                finished.filter { it in shown && OfflineAudioLibrary.existing(getApplication(), it) != null }
+            }
+            if (saved.isNotEmpty()) mutableState.update { it.copy(offlineIds = it.offlineIds + saved) }
+        }
+    }
+
+    private suspend fun reloadSavedPlaylists() {
+        try {
+            val saved = savedStore.read()
+            val account = authorizedAccount?.name
+            // While signed in, only this account's snapshot may replace what the API returned.
+            if (accessToken != null &&
+                (account.isNullOrBlank() || saved.ownerKey != SavedPlaylistStore.accountKey(account))
+            ) return
+            mutableState.value = mutableState.value.copy(playlists = saved.playlists, lastSyncedAt = saved.syncedAt)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.w("HomeDJ", "Saved YouTube catalog reload failed: " + failure.javaClass.simpleName)
+        }
+    }
 
     fun setAutoEnabled(enabled: Boolean) {
         auto.setEnabled(enabled)
@@ -140,14 +187,14 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /** Imports an accessible public/unlisted playlist into this in-memory browsing session. */
+    /** Imports an accessible public/unlisted playlist; without a token the extractor reads it. */
     fun importPlaylist(link: String) {
         val id = YouTubePlaylistLinks.idFromLink(link)
         if (id == null) {
             authorizationError("Paste a valid YouTube or YouTube Music playlist link.")
             return
         }
-        val token = accessToken ?: return
+        val token = accessToken ?: return importPublicPlaylist(id)
         val accountName = authorizedAccount?.name
         playlistJob?.cancel()
         trackJob?.cancel()
@@ -173,6 +220,7 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                         ?: (listOf(playlist) + mutableState.value.playlists).distinctBy(YouTubePlaylist::id),
                     loadingPlaylists = false,
                 )
+                RemoteActivity.record(RemoteActivity.SAMSUNG, "Added playlist " + playlist.title)
                 selectPlaylist(playlist.id)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -180,6 +228,39 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                 Log.w("HomeDJ", "YouTube playlist import failed: " + failure.javaClass.simpleName)
                 mutableState.value = mutableState.value.copy(
                     loadingPlaylists = false, error = messageFor(failure),
+                )
+            }
+        }
+    }
+
+    private fun importPublicPlaylist(id: String) {
+        playlistJob?.cancel()
+        trackJob?.cancel()
+        mutableState.value = mutableState.value.copy(
+            loadingPlaylists = true, loadingTracks = false, tracks = emptyList(),
+            selectedPlaylistId = null, error = null,
+        )
+        playlistJob = viewModelScope.launch {
+            try {
+                val linked = NativeAudioSource.playlist(id)
+                if (linked == null || linked.tracks.isEmpty()) {
+                    mutableState.value = mutableState.value.copy(
+                        loadingPlaylists = false,
+                        error = "Playlist not found, private, or without playable songs.",
+                    )
+                    return@launch
+                }
+                val saved = savedStore.importPublic(linked)
+                mutableState.value = mutableState.value.copy(playlists = saved.playlists, loadingPlaylists = false)
+                RemoteActivity.record(RemoteActivity.SAMSUNG, "Added playlist " + linked.playlist.title)
+                selectPlaylist(id)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("HomeDJ", "Public playlist import failed: " + failure.javaClass.simpleName)
+                mutableState.value = mutableState.value.copy(
+                    loadingPlaylists = false,
+                    error = "Could not read this playlist. Check the link and connection.",
                 )
             }
         }
@@ -212,7 +293,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                         .mapTo(hashSetOf()) { it.id }
                 }
                 mutableState.value = mutableState.value.copy(
-                    tracks = tracks, loadingTracks = false, error = null, offlineIds = offline,
+                    tracks = tracks, loadingTracks = false, error = null,
+                    offlineIds = mutableState.value.offlineIds + offline,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -230,6 +312,7 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         if (!NativeAudioSource.validId(track.id)) return
         OfflineAudioLibrary.enqueue(getApplication(), track)
         mutableState.value = mutableState.value.copy(notice = "Queued download: " + track.title)
+        RemoteActivity.record(RemoteActivity.SAMSUNG, "Saving " + track.title)
     }
 
     fun saveSelectedOffline() {
@@ -241,19 +324,21 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         mutableState.value = mutableState.value.copy(
             notice = "Queued " + tracks.size + " songs for offline saving.",
         )
+        RemoteActivity.record(RemoteActivity.SAMSUNG, "Saving " + tracks.size + " songs")
     }
 
-    /** Only authenticated playlist metadata is read; media bytes come from the in-app extractor. */
+    /** Playlist metadata from the YouTube API when connected, else the extractor. */
     fun downloadPlaylistLink(link: String) {
         val id = YouTubePlaylistLinks.idFromLink(link)
         val token = accessToken
-        if (id == null || token == null) {
-            authorizationError("Connect YouTube and paste a valid playlist link.")
+        if (id == null) {
+            authorizationError("Paste a valid YouTube or YouTube Music playlist link.")
             return
         }
         viewModelScope.launch {
             try {
-                val tracks = repository.tracks(token, id)
+                val tracks = (if (token == null) NativeAudioSource.playlist(id)?.tracks.orEmpty()
+                    else repository.tracks(token, id))
                     .filter { NativeAudioSource.validId(it.id) }
                     .distinctBy(YouTubeTrack::id).take(250)
                 if (accessToken != token) return@launch
@@ -261,6 +346,7 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                 mutableState.value = mutableState.value.copy(
                     notice = "Queued " + tracks.size + " songs from the linked playlist.",
                 )
+                RemoteActivity.record(RemoteActivity.SAMSUNG, "Saving " + tracks.size + " songs from a link")
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
