@@ -1,0 +1,53 @@
+package dev.homedj.app
+
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** One temporary PCM sink on Samsung; not a second Media3 queue or library owner. */
+internal object LiveAudioSink {
+    suspend fun play(receive: () -> ByteArray) = withContext(Dispatchers.IO) {
+        val format = AudioFormat.Builder()
+            .setSampleRate(LiveAudioFormat.SAMPLE_RATE)
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build()
+        val minimum = AudioTrack.getMinBufferSize(
+            LiveAudioFormat.SAMPLE_RATE, AudioFormat.CHANNEL_OUT_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        if (minimum <= 0) throw IOException("Unsupported Samsung audio output")
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setAudioFormat(format)
+            .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 8))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        try {
+            if (track.state != AudioTrack.STATE_INITIALIZED) throw IOException("Audio output unavailable")
+            var started = false
+            while (true) {
+                val pcm = receive()
+                if (!LiveAudioFormat.validPacket(pcm.size)) throw IOException("Invalid audio packet")
+                var position = 0
+                while (position < pcm.size) {
+                    val written = track.write(pcm, position, pcm.size - position, AudioTrack.WRITE_BLOCKING)
+                    if (written <= 0) throw IOException("Samsung audio output stopped")
+                    position += written
+                }
+                if (!started) {
+                    track.play()
+                    started = true
+                }
+            }
+        } finally {
+            track.pause()
+            track.flush()
+            track.release()
+        }
+    }
+}
