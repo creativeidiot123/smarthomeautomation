@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
+import android.media.projection.MediaProjectionManager
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -79,6 +81,41 @@ class HomeDjActivity : ComponentActivity() {
             }
             if (selected.isNotEmpty()) playback.playPickedAudio(selected)
         }
+
+    private val castPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
+            if (allowed) requestCastConsent()
+            else downloadMessage("Audio capture permission is required to cast permitted app playback.")
+        }
+
+    private val castConsent =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK && result.data != null &&
+                roleModel.state.value.mode == HomeDjMode.CONTROLLER
+            ) {
+                try {
+                    LiveAudioCastService.start(this, result.resultCode, result.data!!)
+                } catch (error: Exception) {
+                    Log.w("HomeDJCast", "Cast service start failed: " + error.javaClass.simpleName)
+                    downloadMessage("Could not start audio casting.")
+                }
+            }
+        }
+
+    private fun requestCast() {
+        if (roleModel.state.value.mode != HomeDjMode.CONTROLLER || !remote.state.value.connected) return
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            requestCastConsent()
+        } else {
+            castPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun requestCastConsent() {
+        if (roleModel.state.value.mode != HomeDjMode.CONTROLLER || !remote.state.value.connected) return
+        val projection = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        castConsent.launch(projection.createScreenCaptureIntent())
+    }
 
     private val authorizationLauncher =
         registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -304,9 +341,13 @@ class HomeDjActivity : ComponentActivity() {
                             onDispose { remote.stop() }
                         }
                         val remoteState by remote.state.collectAsStateWithLifecycle()
+                        val castState by LiveAudioCastService.state.collectAsStateWithLifecycle()
                         RemoteControllerScreen(
                             changing = role.changing,
                             state = remoteState,
+                            castState = castState,
+                            onStartCast = ::requestCast,
+                            onStopCast = { LiveAudioCastService.stop(this@HomeDjActivity) },
                             onConnect = remote::connect,
                             onCommand = remote::command,
                             onBrowsePlaylists = remote::browsePlaylists,
@@ -314,7 +355,10 @@ class HomeDjActivity : ComponentActivity() {
                             onBrowseTracks = remote::browseTracks,
                             onLoadMore = remote::loadMore,
                             onLibraryAction = remote::libraryAction,
-                            onSwitch = { roleModel.select(HomeDjMode.SERVER) },
+                            onSwitch = {
+                                LiveAudioCastService.stop(this@HomeDjActivity)
+                                roleModel.select(HomeDjMode.SERVER)
+                            },
                         )
                     }
                     else -> RolePicker(
