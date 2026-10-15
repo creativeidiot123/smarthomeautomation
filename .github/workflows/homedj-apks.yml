@@ -1,0 +1,37 @@
+name: HomeDJ APK
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/homedj-apks.yml'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'app/**'
+  workflow_dispatch:
+
+jobs:
+  android:
+    # The initial self-hosted Linux run remained queued without any job starting.
+    # Use an available hosted runner for the first reproducible APK validation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install Android SDK platform
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -path "*/bin/sdkmanager" -type f | sort -V | tail -n 1)
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;35.0.0"
+      - name: Unit tests and debug APK
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest :app:assembleDebug
+      - name: Upload universal debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: homedj-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
