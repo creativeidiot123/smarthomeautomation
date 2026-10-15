@@ -56,8 +56,15 @@ internal object OfflineAudioLibrary {
     internal fun networkForDownload(accountKey: String?, playlistId: String?): NetworkType =
         if (accountKey != null && playlistId != null) NetworkType.UNMETERED else NetworkType.CONNECTED
 
-    internal fun canTransfer(serverMode: Boolean, selectionAllowed: Boolean): Boolean =
-        serverMode && selectionAllowed
+    /**
+     * Manual and automatic saves use separate unique work and partial files, so a pending
+     * Wi-Fi-only auto job whose opt-in was withdrawn never swallows an explicit manual save.
+     */
+    internal fun workName(id: String, automatic: Boolean): String =
+        (if (automatic) "homedj_auto_audio_" else "homedj_audio_") + id
+
+    internal fun partialFile(context: Context, id: String, automatic: Boolean): File =
+        File(directory(context), if (automatic) "$id.auto.part" else "$id.part")
 
     fun enqueue(
         context: Context, track: YouTubeTrack, accountKey: String? = null,
@@ -69,6 +76,7 @@ internal object OfflineAudioLibrary {
             .putString("accountKey", accountKey)
             .putString("playlistId", playlistId)
             .build()
+        val automatic = accountKey != null && playlistId != null
         val request = OneTimeWorkRequestBuilder<OfflineAudioWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(
                 networkForDownload(accountKey, playlistId)
@@ -76,11 +84,13 @@ internal object OfflineAudioLibrary {
             .setInputData(params)
             .build()
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-            "homedj_audio_${track.id}", ExistingWorkPolicy.KEEP, request,
+            workName(track.id, automatic), ExistingWorkPolicy.KEEP, request,
         )
     }
 
-    internal suspend fun download(context: Context, id: String, authorized: suspend () -> Boolean): File =
+    internal suspend fun download(
+        context: Context, id: String, automatic: Boolean, authorized: suspend () -> Boolean,
+    ): File =
         withContext(Dispatchers.IO) {
             require(NativeAudioSource.validId(id))
             existing(context, id)?.let { return@withContext it }
@@ -89,7 +99,7 @@ internal object OfflineAudioLibrary {
             val folder = directory(context)
             if (!folder.exists() && !folder.mkdirs()) throw IOException("Cannot create audio directory")
             val destination = File(folder, "$id.${link.extension}")
-            val partial = File(folder, "$id.part")
+            val partial = partialFile(context, id, automatic)
             val existingSize = folder.listFiles().orEmpty().filter { it.isFile && it.extension != "part" }
                 .sumOf { it.length().coerceAtLeast(0) }
             if (existingSize >= MAX_LIBRARY_BYTES) throw IOException("Offline library storage limit reached")
@@ -163,17 +173,17 @@ class OfflineAudioWorker(context: Context, params: WorkerParameters) : Coroutine
         val playlist = inputData.getString("playlistId")
         val modeStore = ModeStore(applicationContext)
         val config = AutoLibraryConfig(applicationContext)
+        val automatic = account != null && playlist != null
         val authorized: suspend () -> Boolean = {
-            OfflineAudioLibrary.canTransfer(
-                modeStore.mode.first() == HomeDjMode.SERVER,
-                account == null || playlist == null || config.isDownloadCurrent(account, playlist)
-            )
+            modeStore.mode.first() == HomeDjMode.SERVER &&
+                (!automatic || config.isDownloadCurrent(account.orEmpty(), playlist.orEmpty()))
         }
-        if (!NativeAudioSource.validId(id) || !authorized()) {
-            return Result.success()
-        }
+        if (!NativeAudioSource.validId(id)) return Result.success()
+        // A killed earlier attempt of this unique job may have left a partial file behind.
+        OfflineAudioLibrary.partialFile(applicationContext, id, automatic).delete()
+        if (!authorized()) return Result.success()
         return try {
-            val file = OfflineAudioLibrary.download(applicationContext, id, authorized)
+            val file = OfflineAudioLibrary.download(applicationContext, id, automatic, authorized)
             Log.i("HomeDJOffline", "Download ready: videoId=" + id + " bytes=" + file.length())
             Result.success()
         } catch (cancelled: CancellationException) {

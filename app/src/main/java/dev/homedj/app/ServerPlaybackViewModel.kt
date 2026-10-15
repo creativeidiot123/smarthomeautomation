@@ -8,6 +8,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,9 +50,11 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
                 refresh(connected)
             } catch (exception: ExecutionException) {
                 Log.e("HomeDJ", "Media controller connection failed", exception)
+                future = null // Allow the next screen entry to retry.
                 mutableStatus.value = ServerPlaybackUiState(error = "Media service unavailable")
             } catch (exception: InterruptedException) {
                 Thread.currentThread().interrupt()
+                future = null
                 mutableStatus.value = ServerPlaybackUiState(error = "Media service connection interrupted")
             }
         }, application.mainExecutor)
@@ -65,9 +69,11 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
         mutableStatus.value = ServerPlaybackUiState()
     }
 
+    /** Pause also cancels a buffering/stalled start; play re-prepares after an error. */
+    @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     fun playOrPause() {
         val active = controller ?: return
-        if (active.isPlaying) active.pause() else if (active.currentMediaItem != null) active.play()
+        if (active.currentMediaItem != null) Util.handlePlayPauseButtonAction(active)
     }
 
     fun next() { controller?.seekToNextMediaItem() }
@@ -96,6 +102,7 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
         active.play()
     }
 
+    @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     private fun refresh(player: Player) {
         mutableStatus.value = ServerPlaybackUiState(
             connected = true,
@@ -103,7 +110,7 @@ class ServerPlaybackViewModel(application: Application) : AndroidViewModel(appli
                 title = player.currentMediaItem?.mediaMetadata?.title?.toString()
                     ?: "No track selected",
                 hasTrack = player.currentMediaItem != null,
-                isPlaying = player.isPlaying,
+                isPlaying = !Util.shouldShowPlayButton(player),
                 hasNext = player.hasNextMediaItem(),
                 hasPrevious = player.hasPreviousMediaItem(),
                 queueSize = player.mediaItemCount,

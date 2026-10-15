@@ -2,8 +2,7 @@ package dev.homedj.app
 
 import androidx.work.NetworkType
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class OfflineAudioPolicyTest {
@@ -16,9 +15,8 @@ class OfflineAudioPolicyTest {
             OfflineAudioLibrary.networkForDownload("account", null))
     }
 
-    @Test fun stoppedOrSwitchedServerMustNotContinueTransferring() {
-        assertTrue(OfflineAudioLibrary.canTransfer(true, true))
-        assertFalse(OfflineAudioLibrary.canTransfer(false, true))
-        assertFalse(OfflineAudioLibrary.canTransfer(true, false))
+    @Test fun manualSaveIsNotSwallowedByPendingAutomaticJob() {
+        assertNotEquals(OfflineAudioLibrary.workName("dQw4w9WgXcQ", automatic = true),
+            OfflineAudioLibrary.workName("dQw4w9WgXcQ", automatic = false))
     }
 }

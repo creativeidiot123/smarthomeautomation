@@ -21,6 +21,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import java.io.IOException
 import java.net.Socket
@@ -30,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -64,6 +66,8 @@ class LiveAudioCastService : Service() {
     @Volatile private var recorder: AudioRecord? = null
     private var projection: MediaProjection? = null
     @Volatile private var stopping = false
+    // Sockets have no write timeout; a vanished Samsung would otherwise block a send for minutes.
+    @Volatile private var sendStartedAt = 0L
 
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -81,9 +85,7 @@ class LiveAudioCastService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (intent?.action != ACTION_START || captureJob != null ||
-            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (intent?.action != ACTION_START || captureJob != null) {
             if (captureJob == null) stopSelf()
             return START_NOT_STICKY
         }
@@ -103,9 +105,11 @@ class LiveAudioCastService : Service() {
             .addAction(android.R.drawable.ic_media_pause, "Stop casting", stopPending)
             .build()
         try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(91, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-            } else startForeground(91, notification)
+            // startForegroundService() requires this before any stopSelf(); check permission after it.
+            startForeground(91, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                throw SecurityException("Audio capture permission missing")
+            }
             val resultCode = intent.getIntExtra(EXTRA_CODE, Activity.RESULT_CANCELED)
             @Suppress("DEPRECATION")
             val grant = if (Build.VERSION.SDK_INT >= 33)
@@ -122,6 +126,15 @@ class LiveAudioCastService : Service() {
             val key = RemoteChannel.decodeKey(prefs.savedClientKey)
             if (!RemotePrefs.validPrivateIpv4(host) || key == null) throw IOException("Pair Samsung first")
             state.value = CastState(connecting = true)
+            scope.launch {
+                while (true) {
+                    delay(1_000)
+                    val sending = sendStartedAt
+                    if (sending != 0L && SystemClock.elapsedRealtime() - sending > SEND_STALL_MILLIS) {
+                        castSocket.close()
+                    }
+                }
+            }
             captureJob = scope.launch {
                 try {
                     val format = AudioFormat.Builder()
@@ -155,6 +168,7 @@ class LiveAudioCastService : Service() {
                     val frame = ByteArray(LiveAudioFormat.CHUNK_BYTES)
                     var started = false
                     RemoteChannel.streamAudio(host, key, onSocket = castSocket::attach) {
+                        sendStartedAt = 0L // The previous frame has been written.
                         if (stopping) throw IOException("Audio casting stopped")
                         val read = active.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
                         if (stopping || read <= 0) throw IOException("Audio capture stopped")
@@ -166,6 +180,7 @@ class LiveAudioCastService : Service() {
                             }
                         }
                         frame.copyOf(read - read % 4).takeIf { it.isNotEmpty() }
+                            ?.also { sendStartedAt = SystemClock.elapsedRealtime() }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -211,6 +226,7 @@ class LiveAudioCastService : Service() {
         private const val ACTION_STOP = "dev.homedj.app.STOP_CAST"
         private const val EXTRA_CODE = "projection_code"
         private const val EXTRA_DATA = "projection_data"
+        private const val SEND_STALL_MILLIS = 5_000L
         internal val state = MutableStateFlow(CastState())
 
         fun start(context: Context, resultCode: Int, data: Intent) {

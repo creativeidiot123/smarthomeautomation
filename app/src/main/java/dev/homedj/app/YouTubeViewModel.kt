@@ -5,8 +5,11 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -195,14 +198,21 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
                 val tracks = if (token == null) {
                     savedStore.read().tracks[id].orEmpty()
                 } else {
-                    repository.tracks(token, id).also {
-                        if (!accountName.isNullOrBlank()) savedStore.storeTracks(accountName, id, it)
+                    repository.tracks(token, id).also { fetched ->
+                        if (!accountName.isNullOrBlank()) try {
+                            savedStore.storeTracks(accountName, id, fetched)
+                        } catch (failure: IOException) {
+                            // Offline snapshot is best-effort; still show what was fetched.
+                            Log.w("HomeDJ", "Saving playlist tracks failed: " + failure.javaClass.simpleName)
+                        }
                     }
                 }
+                val offline = withContext(Dispatchers.IO) {
+                    tracks.filter { OfflineAudioLibrary.existing(getApplication(), it.id) != null }
+                        .mapTo(hashSetOf()) { it.id }
+                }
                 mutableState.value = mutableState.value.copy(
-                    tracks = tracks, loadingTracks = false, error = null,
-                    offlineIds = tracks.filter { OfflineAudioLibrary.existing(getApplication(), it.id) != null }
-                        .mapTo(hashSetOf()) { it.id },
+                    tracks = tracks, loadingTracks = false, error = null, offlineIds = offline,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

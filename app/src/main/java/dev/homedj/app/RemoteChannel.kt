@@ -74,15 +74,13 @@ internal object RemoteChannel {
                 throw IOException("Samsung rejected audio casting")
             }
             while (!socket.isClosed) {
-                val chunk = next() ?: break
-                if (!LiveAudioFormat.validPacket(chunk.size)) throw IOException("Invalid audio frame")
-                sendBytes(output, key, challenge, chunk)
+                sendAudio(output, key, challenge, next() ?: break)
             }
         }
     }
 
     internal fun sendAudio(output: DataOutputStream, key: SecretKeySpec, challenge: ByteArray, pcm: ByteArray) {
-        require(LiveAudioFormat.validPacket(pcm.size))
+        require(LiveAudioFormat.validPacket(pcm.size)) { "Invalid audio frame" }
         sendBytes(output, key, challenge, pcm)
     }
 

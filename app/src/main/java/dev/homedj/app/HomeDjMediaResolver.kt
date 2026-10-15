@@ -20,15 +20,15 @@ internal class HomeDjMediaResolver(context: Context) : ResolvingDataSource.Resol
     override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
         val id = videoIdFromUri(dataSpec.uri.toString()) ?: return dataSpec
         OfflineAudioLibrary.existing(app, id)?.let { return dataSpec.withUri(Uri.fromFile(it)) }
-        val uri = synchronized(links) {
+        // Network extraction runs outside the lock so one slow track never blocks skipping to another.
+        synchronized(links) {
             val now = SystemClock.elapsedRealtime()
-            links[id]?.takeIf { it.expiresAt > now }?.uri ?: run {
-                val resolved = Uri.parse(NativeAudioSource.resolveBlocking(id).url)
-                links[id] = Cached(resolved, SystemClock.elapsedRealtime() + 4 * 60_000L)
-                resolved
-            }
-        }
-        return dataSpec.withUri(uri)
+            links.values.removeAll { it.expiresAt <= now }
+            links[id]?.uri
+        }?.let { return dataSpec.withUri(it) }
+        val resolved = Uri.parse(NativeAudioSource.resolveBlocking(id).url)
+        synchronized(links) { links[id] = Cached(resolved, SystemClock.elapsedRealtime() + 4 * 60_000L) }
+        return dataSpec.withUri(resolved)
     }
 
     companion object {

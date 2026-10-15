@@ -19,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -64,9 +65,10 @@ class HomeDjActivity : ComponentActivity() {
             if (selected.isNotEmpty()) playback.playPickedAudio(selected)
         }
 
+    // Notification access is optional; without it Android 13+ hides the cast's Stop action.
     private val castPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
-            if (allowed) requestCastConsent()
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            if (results[Manifest.permission.RECORD_AUDIO] == true) requestCastConsent()
             else downloadMessage("Audio capture permission is required to cast permitted app playback.")
         }
 
@@ -87,11 +89,11 @@ class HomeDjActivity : ComponentActivity() {
 
     private fun requestCast() {
         if (roleModel.state.value.mode != HomeDjMode.CONTROLLER || !remote.state.value.connected) return
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            requestCastConsent()
-        } else {
-            castPermission.launch(Manifest.permission.RECORD_AUDIO)
-        }
+        val missing = listOfNotNull(
+            Manifest.permission.RECORD_AUDIO,
+            if (Build.VERSION.SDK_INT >= 33) Manifest.permission.POST_NOTIFICATIONS else null,
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) requestCastConsent() else castPermission.launch(missing.toTypedArray())
     }
 
     private fun requestCastConsent() {
@@ -231,17 +233,8 @@ class HomeDjActivity : ComponentActivity() {
     private fun playYouTubeTrack(track: YouTubeTrack) {
         if (roleModel.state.value.mode != HomeDjMode.SERVER ||
             !NativeAudioSource.validId(track.id)) return
-        lifecycleScope.launch {
-            try {
-                val selected = LocalAudio(HomeDjMediaResolver.trackUri(track.id), track.title)
-                if (roleModel.state.value.mode == HomeDjMode.SERVER) playback.playPickedAudio(listOf(selected))
-            } catch (error: Exception) {
-                if (error is kotlinx.coroutines.CancellationException) throw error
-                Log.w("HomeDJ", "Native YouTube audio resolve failed: videoId=" + track.id +
-                    " type=" + error.javaClass.simpleName)
-                downloadMessage("Could not play this track. Audio may be restricted or unavailable.")
-            }
-        }
+        // PlaybackService resolves the stream when the item loads; failures surface as player errors.
+        playback.playPickedAudio(listOf(LocalAudio(HomeDjMediaResolver.trackUri(track.id), track.title)))
     }
 
     private fun disconnectYouTube() {
@@ -280,22 +273,27 @@ class HomeDjActivity : ComponentActivity() {
                             playback.connect()
                             youtube.showSavedCatalog()
                             AutoLibraryConfig(this@HomeDjActivity).schedule()
-                            requestYouTubeAccess(interactive = false)
+                            // ViewModels survive rotation; keep their token and selection.
+                            if (!youtube.state.value.authorized) requestYouTubeAccess(interactive = false)
                             if (RemotePrefs(this@HomeDjActivity).enabled) setRemoteEnabled(true)
                             onDispose {
-                                playback.disconnect()
-                                youtube.clear()
+                                if (!isChangingConfigurations) {
+                                    playback.disconnect()
+                                    youtube.clear()
+                                }
                             }
                         }
                         val status by playback.status.collectAsStateWithLifecycle()
                         val youtubeState by youtube.state.collectAsStateWithLifecycle()
                         val remoteRunning by RemoteServerService.running.collectAsStateWithLifecycle()
+                        val remoteAddress = remember(remoteRunning) { RemotePrefs.localAddress(this@HomeDjActivity) }
+                        val pairingCode = remember { RemotePrefs(this@HomeDjActivity).serverKey() }
                         ServerScreen(
                             status = status,
                             youtubeState = youtubeState,
                             remoteRunning = remoteRunning,
-                            remoteAddress = RemotePrefs.localAddress(this@HomeDjActivity),
-                            remotePairingCode = RemotePrefs(this@HomeDjActivity).serverKey(),
+                            remoteAddress = remoteAddress,
+                            remotePairingCode = pairingCode,
                             onRemoteToggle = ::setRemoteEnabled,
                             changing = role.changing,
                             onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
@@ -321,7 +319,7 @@ class HomeDjActivity : ComponentActivity() {
                     role.mode == HomeDjMode.CONTROLLER -> {
                         DisposableEffect(remote) {
                             remote.start()
-                            onDispose { remote.stop() }
+                            onDispose { if (!isChangingConfigurations) remote.stop() }
                         }
                         val remoteState by remote.state.collectAsStateWithLifecycle()
                         val castState by LiveAudioCastService.state.collectAsStateWithLifecycle()
@@ -352,6 +350,13 @@ class HomeDjActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStop() {
+        // Activity-scoped Play services listeners are dropped at onStop; never leave a request stuck.
+        authorizationPending = false
+        revokePending = false
+        super.onStop()
     }
 
     private companion object {

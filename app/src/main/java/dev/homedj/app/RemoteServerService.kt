@@ -12,6 +12,8 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import java.io.DataInputStream
@@ -28,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -109,12 +112,14 @@ class RemoteServerService : Service() {
             running.value = true
             val key = requireNotNull(RemoteChannel.decodeKey(RemotePrefs(this).serverKey()))
             while (true) {
-                val client = withContext(Dispatchers.IO) { listener.accept() }
+                val client = listener.accept()
                 if (!connections.tryAcquire()) {
                     client.close()
                     continue
                 }
                 clients.add(client)
+                // soTimeout bounds each read, not a slowly trickled request; cap the whole handshake.
+                val handshake = scope.launch { delay(HANDSHAKE_MILLIS); client.close() }
                 scope.launch {
                     try {
                         client.use { socket ->
@@ -124,7 +129,7 @@ class RemoteServerService : Service() {
                                 DataInputStream(socket.getInputStream()),
                                 DataOutputStream(socket.getOutputStream()),
                                 key,
-                                action = { request -> handle(request, socket) },
+                                action = { request -> handshake.cancel(); handle(request, socket) },
                                 onPcm = { next -> LiveAudioSink.play(this@RemoteServerService, next) },
                             )
                         }
@@ -132,6 +137,7 @@ class RemoteServerService : Service() {
                         if (failure is CancellationException) throw failure
                         Log.w("HomeDJRemote", "LAN session ended: " + failure.javaClass.simpleName)
                     } finally {
+                        handshake.cancel()
                         castSocket.compareAndSet(client, null)
                         clients.remove(client)
                         connections.release()
@@ -154,6 +160,7 @@ class RemoteServerService : Service() {
         }
     }
 
+    @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     private suspend fun handle(request: JSONObject, socket: Socket): JSONObject =
         withContext(Dispatchers.Main.immediate) {
             if (!RemotePrefs(this@RemoteServerService).enabled ||
@@ -171,10 +178,6 @@ class RemoteServerService : Service() {
                 active.pause()
                 return@withContext JSONObject().put("ok", true)
             }
-            if (action == "stopCast") {
-                stopCast()
-                return@withContext JSONObject().put("ok", true)
-            }
             if (action in setOf("playTrack", "playPlaylist", "playPause", "next", "previous")) {
                 stopCast()
             }
@@ -184,8 +187,8 @@ class RemoteServerService : Service() {
             }
             when (action) {
                 "status" -> Unit
-                "playPause" -> if (active.isPlaying) active.pause()
-                    else if (active.currentMediaItem != null) active.play()
+                // Pause also cancels a buffering start; play re-prepares after an error.
+                "playPause" -> if (active.currentMediaItem != null) Util.handlePlayPauseButtonAction(active)
                     else return@withContext JSONObject().put("ok", false).put("error", "No audio queued on server")
                 "next" -> active.seekToNextMediaItem()
                 "previous" -> active.seekToPreviousMediaItem()
@@ -208,7 +211,7 @@ class RemoteServerService : Service() {
                 .put("title", if (castSocket.get() != null) "OnePlus live audio"
                     else active.currentMediaItem?.mediaMetadata?.title?.toString() ?: "No track selected")
                 .put("casting", castSocket.get() != null)
-                .put("playing", active.isPlaying)
+                .put("playing", !Util.shouldShowPlayButton(active))
                 .put("hasTrack", active.currentMediaItem != null)
                 .put("queueSize", active.mediaItemCount)
                 .put("shuffle", active.shuffleModeEnabled)
@@ -217,10 +220,10 @@ class RemoteServerService : Service() {
 
     override fun onDestroy() {
         running.value = false
+        scope.cancel() // First, so the listener treats the socket close below as a normal stop.
         server?.close()
         stopCast()
         clients.forEach { it.close() }
-        scope.cancel()
         mediaFuture?.let(MediaController::releaseFuture)
         mediaFuture = null
         controller = null
@@ -228,6 +231,7 @@ class RemoteServerService : Service() {
     }
 
     companion object {
+        private const val HANDSHAKE_MILLIS = 8_000L
         val running = MutableStateFlow(false)
         fun setEnabled(context: Context, enabled: Boolean) {
             val app = context.applicationContext

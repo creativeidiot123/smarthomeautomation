@@ -122,8 +122,17 @@ class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : Corout
             val queued = hashSetOf<String>()
             for (playlistId in selected) {
                 if (!config.isCurrent(account) || playlistId !in config.playlistIds) break
-                val tracks = YouTubePlaylistRepository().tracks(token, playlistId)
-                SavedPlaylistStore.shared(app).storeTracks(account, playlistId, tracks)
+                // One deleted/private/oversized playlist must not block the others every pass.
+                val tracks = try {
+                    YouTubePlaylistRepository().tracks(token, playlistId).also {
+                        SavedPlaylistStore.shared(app).storeTracks(account, playlistId, it)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    Log.w("HomeDJAuto", "Playlist sync skipped: " + failure.javaClass.simpleName)
+                    continue
+                }
                 for (track in tracks) {
                     if (queued.size >= 150 || !config.isCurrent(account) ||
                         playlistId !in config.playlistIds) break
