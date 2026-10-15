@@ -1,5 +1,8 @@
 package dev.homedj.app
 
+import android.content.Context
+import android.media.AudioManager
+import android.media.AudioFocusRequest
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -9,7 +12,7 @@ import kotlinx.coroutines.withContext
 
 /** One temporary PCM sink on Samsung; not a second Media3 queue or library owner. */
 internal object LiveAudioSink {
-    suspend fun play(receive: () -> ByteArray) = withContext(Dispatchers.IO) {
+    suspend fun play(context: Context, receive: () -> ByteArray) = withContext(Dispatchers.IO) {
         val format = AudioFormat.Builder()
             .setSampleRate(LiveAudioFormat.SAMPLE_RATE)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -19,10 +22,17 @@ internal object LiveAudioSink {
             AudioFormat.ENCODING_PCM_16BIT,
         )
         if (minimum <= 0) throw IOException("Unsupported Samsung audio output")
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attributes).build()
+        if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            throw IOException("Samsung audio focus unavailable")
+        }
         val track = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setAudioAttributes(attributes)
             .setAudioFormat(format)
             .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 8))
             .setTransferMode(AudioTrack.MODE_STREAM)
@@ -30,6 +40,7 @@ internal object LiveAudioSink {
         try {
             if (track.state != AudioTrack.STATE_INITIALIZED) throw IOException("Audio output unavailable")
             var started = false
+            var primed = 0
             while (true) {
                 val pcm = receive()
                 if (!LiveAudioFormat.validPacket(pcm.size)) throw IOException("Invalid audio packet")
@@ -39,15 +50,17 @@ internal object LiveAudioSink {
                     if (written <= 0) throw IOException("Samsung audio output stopped")
                     position += written
                 }
-                if (!started) {
+                primed += pcm.size
+                if (!started && primed >= LiveAudioFormat.CHUNK_BYTES * 5) {
                     track.play()
                     started = true
                 }
             }
         } finally {
-            track.pause()
+            runCatching { track.pause() }
             track.flush()
             track.release()
+            audio.abandonAudioFocusRequest(focus)
         }
     }
 }
