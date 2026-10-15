@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun YouTubeSection(
     state: YouTubeUiState,
+    showPlaylists: Boolean,
+    onShowPlaylistsChange: (Boolean) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
@@ -44,7 +46,6 @@ internal fun YouTubeSection(
     var playlistLink by rememberSaveable { mutableStateOf("") }
     var showOptions by rememberSaveable { mutableStateOf(false) }
     var showLink by rememberSaveable { mutableStateOf(false) }
-    var showPlaylists by rememberSaveable { mutableStateOf(true) }
     var confirmDisconnect by rememberSaveable { mutableStateOf(false) }
 
     if (confirmDisconnect) {
@@ -88,12 +89,16 @@ internal fun YouTubeSection(
             TextButton(onClick = onConnect, enabled = !state.loadingPlaylists) { Text("Sync playlists") }
         }
     }
+    if (state.authorized && !state.autoEnabled && state.autoDownloadIds.isNotEmpty()) {
+        Text("Automatic downloads are off. Enable them in Library settings.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
     state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
 
     val selected = state.selectedPlaylistId
     if (selected != null && !showPlaylists) {
-        TextButton(onClick = { showPlaylists = true }) { Text("← All playlists") }
+        TextButton(onClick = { onShowPlaylistsChange(true) }) { Text("← All playlists") }
         Text(state.playlists.firstOrNull { it.id == selected }?.title ?: "Playlist",
             style = MaterialTheme.typography.headlineSmall)
         if (state.loadingTracks) {
@@ -137,7 +142,7 @@ internal fun YouTubeSection(
             state.playlists.forEach { playlist ->
                 Card(
                     onClick = {
-                        showPlaylists = false
+                        onShowPlaylistsChange(false)
                         onSelectPlaylist(playlist.id)
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -158,7 +163,8 @@ internal fun YouTubeSection(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text("Auto-save on Wi-Fi", style = MaterialTheme.typography.bodyMedium)
+                                Text(if (state.autoEnabled) "Auto-save on Wi-Fi" else "Include in auto-save",
+                                    style = MaterialTheme.typography.bodyMedium)
                                 Switch(
                                     checked = playlist.id in state.autoDownloadIds,
                                     onCheckedChange = { onToggleAutoPlaylist(playlist.id) },
