@@ -1,0 +1,77 @@
+name: Matter SDK Android controller
+# Builds the Project CHIP (connectedhomeip) Android controller libraries that HomeDJ
+# vendors into app/libs: one pinned release, arm64-v8a only, release profile,
+# stripped. Uses the same container image as upstream's full-android workflow for
+# that release. Output is an artifact only; nothing is committed or published.
+on:
+  push:
+    branches:
+      - matter-sdk-build
+    paths:
+      - '.github/workflows/matter-sdk.yml'
+  workflow_dispatch:
+
+env:
+  CHIP_REF: v1.6.1.0
+  CHIP_TARGET: android-arm64-chip-tool
+
+jobs:
+  controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/project-chip/chip-build-android:200
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: project-chip/connectedhomeip
+          ref: ${{ env.CHIP_REF }}
+          fetch-depth: 1
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory '*'
+          for attempt in 1 2 3; do
+            scripts/checkout_submodules.py --allow-changing-global-git-config --shallow --platform android && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 5
+          done
+      - name: Bootstrap
+        env:
+          PW_NO_CIPD_CACHE_DIR: 1
+          PW_ENVSETUP_NO_BANNER: 1
+        run: source scripts/bootstrap.sh -p all,android
+      - name: Remove unused pigweed arm toolchain
+        continue-on-error: true
+        run: rm -rf .environment/cipd/packages/arm
+      - name: Build controller
+        run: |
+          ./scripts/run_in_build_env.sh \
+            "./scripts/build/build_examples.py --target $CHIP_TARGET --build-profile release build"
+      - name: Collect stripped libraries
+        run: |
+          out="out/$CHIP_TARGET/lib"
+          mkdir -p dist/jniLibs/arm64-v8a
+          for jar in CHIPController CHIPInteractionModel OnboardingPayload libMatterJson libMatterTlv CHIPClusters CHIPClusterID; do
+            cp "$out/src/controller/java/$jar.jar" dist/
+          done
+          cp "$out/src/platform/android/AndroidPlatform.jar" dist/
+          for so in libCHIPController.so libc++_shared.so; do
+            cp "$out/jni/arm64-v8a/$so" dist/jniLibs/arm64-v8a/
+          done
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" -s dist/jniLibs/arm64-v8a/*.so
+          {
+            echo "connectedhomeip $CHIP_REF $(git rev-parse HEAD)"
+            echo "target $CHIP_TARGET, build profile release, stripped"
+            echo "container ghcr.io/project-chip/chip-build-android:200"
+          } > dist/VERSION.txt
+          cp LICENSE dist/LICENSE-connectedhomeip.txt
+          (cd dist && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          ls -la dist dist/jniLibs/arm64-v8a
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matter-controller-${{ env.CHIP_REF }}-arm64
+          path: dist
+          if-no-files-found: error
