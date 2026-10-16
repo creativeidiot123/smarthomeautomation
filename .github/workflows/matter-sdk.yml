@@ -1,7 +1,8 @@
 name: Matter SDK Android controller
 # Builds the Project CHIP (connectedhomeip) Android controller libraries that HomeDJ
-# vendors into app/libs: one pinned release, arm64-v8a only, release profile,
-# stripped. Uses the same container image as upstream's full-android workflow for
+# vendors into app/libs: one pinned release, arm64-v8a only, upstream's default build
+# profile (the release profile's final link stalled for hours on a hosted runner), stripped.
+# Uses the same container image as upstream's full-android workflow for
 # that release. Output is an artifact only; nothing is committed or published.
 on:
   push:
@@ -49,7 +50,7 @@ jobs:
       - name: Build controller
         run: |
           ./scripts/run_in_build_env.sh \
-            "./scripts/build/build_examples.py --target $CHIP_TARGET --build-profile release build"
+            "./scripts/build/build_examples.py --target $CHIP_TARGET build"
       - name: Collect stripped libraries
         run: |
           out="out/$CHIP_TARGET/lib"
@@ -64,7 +65,7 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" -s dist/jniLibs/arm64-v8a/*.so
           {
             echo "connectedhomeip $CHIP_REF $(git rev-parse HEAD)"
-            echo "target $CHIP_TARGET, build profile release, stripped"
+            echo "target $CHIP_TARGET, default build profile, stripped"
             echo "container ghcr.io/project-chip/chip-build-android:200"
           } > dist/VERSION.txt
           cp LICENSE dist/LICENSE-connectedhomeip.txt
