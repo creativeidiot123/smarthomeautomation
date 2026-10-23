@@ -283,12 +283,11 @@ class RemoteServerService : Service() {
             ) {
                 return@withContext JSONObject().put("ok", false).put("error", STALE_SONG)
             }
-            if (action in setOf("playTrack", "playPlaylist", "playPause", "next", "previous")) {
-                stopCast()
-            }
+            if (endsCast(action, accepted = null)) stopCast()
             if (action in setOf("catalog", "tracks", "downloads", "playTrack", "playPlaylist",
                     "saveTrack", "savePlaylist", "importPlaylist", "cancelSave", "removeSaved", "refreshPlaylist")) {
                 return@withContext musicLibrary.handle(request, active).also { reply ->
+                    if (endsCast(action, accepted = reply.optBoolean("ok"))) stopCast()
                     if (reply.optBoolean("ok") && action !in setOf("catalog", "tracks", "downloads")) {
                         RemoteActivity.record(RemoteActivity.ONEPLUS, reply.optString("message", action))
                     }
@@ -435,6 +434,16 @@ internal fun wantsPlaying(requested: Boolean?, playing: Boolean): Boolean = requ
 /** A skip aimed at a song Samsung already left is refused instead of skipping a second song. */
 internal fun isStaleSkip(requestedIndex: Int?, currentIndex: Int): Boolean =
     requestedIndex != null && requestedIndex != currentIndex
+
+/**
+ * Whether a command ends a live cast: play/pause and skips before Samsung runs them (accepted is
+ * null), a song or playlist only once Samsung accepted it, so a rejected one keeps the cast going.
+ */
+internal fun endsCast(action: String, accepted: Boolean?): Boolean = when (action) {
+    "playPause", "next", "previous" -> accepted == null
+    "playTrack", "playPlaylist" -> accepted == true
+    else -> false
+}
 
 /** Where to seek, or null for a negative position or a seek aimed at a song Samsung already left. */
 internal fun seekTarget(requestedIndex: Int?, currentIndex: Int, positionMs: Long, durationMs: Long): Long? {

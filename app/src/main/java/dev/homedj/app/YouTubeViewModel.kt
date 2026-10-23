@@ -247,7 +247,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         }
         val token = accessToken ?: return importPublicPlaylist(id)
         val accountName = authorizedAccount?.name
-        playlistJob?.cancel()
+        // Wait for an in-flight owned-playlist sync instead of cancelling it.
+        val previous = playlistJob
         trackJob?.cancel()
         mutableState.value = mutableState.value.copy(
             loadingPlaylists = true, loadingTracks = false, tracks = emptyList(),
@@ -255,6 +256,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         )
         playlistJob = viewModelScope.launch {
             try {
+                previous?.join()
+                mutableState.value = mutableState.value.copy(loadingPlaylists = true)
                 val playlist = repository.playlistById(token, id)
                 if (playlist == null) {
                     mutableState.value = mutableState.value.copy(
@@ -285,7 +288,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun importPublicPlaylist(id: String) {
-        playlistJob?.cancel()
+        // Wait for an in-flight owned-playlist sync instead of cancelling it.
+        val previous = playlistJob
         trackJob?.cancel()
         mutableState.value = mutableState.value.copy(
             loadingPlaylists = true, loadingTracks = false, tracks = emptyList(),
@@ -293,6 +297,8 @@ class YouTubeViewModel(application: Application) : AndroidViewModel(application)
         )
         playlistJob = viewModelScope.launch {
             try {
+                previous?.join()
+                mutableState.value = mutableState.value.copy(loadingPlaylists = true)
                 val linked = NativeAudioSource.playlist(id)
                 if (linked == null || linked.tracks.isEmpty()) {
                     mutableState.value = mutableState.value.copy(

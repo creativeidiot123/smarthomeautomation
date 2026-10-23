@@ -164,7 +164,7 @@ internal fun RemoteControllerScreen(
         hasTrack = state.hasTrack,
         playing = state.playing,
         canPlayPause = state.connected && state.hasTrack,
-        canPrevious = state.connected && state.hasTrack && !state.casting,
+        canPrevious = state.connected && state.hasTrack,
         canNext = state.connected && state.hasTrack,
         shuffle = state.shuffle,
         canShuffle = state.connected && state.queueSize > 1 && !state.casting,

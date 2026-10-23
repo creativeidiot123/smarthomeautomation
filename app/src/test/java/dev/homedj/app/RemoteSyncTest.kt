@@ -73,6 +73,17 @@ class RemoteSyncTest {
         assertFalse(isStaleSkip(requestedIndex = null, currentIndex = 4))
     }
 
+    @Test fun aRejectedSongKeepsTheLiveCast() {
+        assertTrue(endsCast("next", accepted = null))
+        assertTrue(endsCast("playPause", accepted = null))
+        assertFalse(endsCast("playTrack", accepted = null))
+        assertFalse(endsCast("playTrack", accepted = false))
+        assertTrue(endsCast("playTrack", accepted = true))
+        assertTrue(endsCast("playPlaylist", accepted = true))
+        assertFalse(endsCast("saveTrack", accepted = true))
+        assertFalse(endsCast("volume", accepted = null))
+    }
+
     @Test fun onlyAKnownRevisionMoveRefreshesTheLibrary() {
         assertFalse(libraryChanged(null, 5))
         assertFalse(libraryChanged(5, null))

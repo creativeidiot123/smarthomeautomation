@@ -100,6 +100,13 @@ class HomeDjActivity : ComponentActivity() {
             }
         }
 
+    /** Samsung playback commands end a live cast there; stop it here first so it is not reported as a Wi-Fi failure. */
+    private fun endCastFor(action: String) {
+        if (action in setOf("playPause", "next", "previous", "playTrack", "playPlaylist")) {
+            LiveAudioCastService.stop(this)
+        }
+    }
+
     // OnePlus: foreground permissions, then "Allow all the time". Samsung: Bluetooth only.
     private val presencePermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -452,14 +459,20 @@ class HomeDjActivity : ComponentActivity() {
                             onPairCode = pairing::editCode,
                             onScanPairing = { scanRemotePairingQr(this@HomeDjActivity, pairing) },
                             onConnect = { pairing.connect(remote::connect) },
-                            onCommand = remote::command,
+                            onCommand = { action, percent ->
+                                endCastFor(action)
+                                remote.command(action, percent)
+                            },
                             onSeek = remote::seek,
                             onDownloadChange = remote::changeDownload,
                             onBrowsePlaylists = remote::browsePlaylists,
                             onBrowseDownloads = remote::browseDownloads,
                             onBrowseTracks = remote::browseTracks,
                             onRetryBrowse = remote::retryBrowse,
-                            onLibraryAction = remote::libraryAction,
+                            onLibraryAction = { action, id ->
+                                endCastFor(action)
+                                remote.libraryAction(action, id)
+                            },
                             onImportLink = remote::importPlaylistLink,
                             onRefreshPlaylist = remote::refreshPlaylist,
                             onBreaks = remote::setBreaks,

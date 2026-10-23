@@ -191,7 +191,7 @@ class LiveAudioCastService : Service() {
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
-                    if (!stopping) {
+                    if (!stopping && !stopRequested) {
                         Log.w("HomeDJCast", "Audio cast ended: " + error.javaClass.simpleName)
                         state.value = CastState(error = "Casting stopped. Check Wi-Fi, permission and Samsung remote access.")
                     }
@@ -234,8 +234,11 @@ class LiveAudioCastService : Service() {
         private const val EXTRA_DATA = "projection_data"
         private const val SEND_STALL_MILLIS = 5_000L
         internal val state = MutableStateFlow(CastState())
+        // Set synchronously so a close the user caused is never reported before onDestroy runs.
+        @Volatile private var stopRequested = false
 
         fun start(context: Context, resultCode: Int, data: Intent) {
+            stopRequested = false
             context.startForegroundService(
                 Intent(context, LiveAudioCastService::class.java).setAction(ACTION_START)
                     .putExtra(EXTRA_CODE, resultCode)
@@ -243,6 +246,7 @@ class LiveAudioCastService : Service() {
             )
         }
         fun stop(context: Context) {
+            stopRequested = true
             context.stopService(Intent(context, LiveAudioCastService::class.java))
         }
     }
