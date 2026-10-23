@@ -7,3 +7,5 @@
 *.apk
 *.aab
 .DS_Store
+/app/release/
+/gradle/wrapper/
