@@ -42,6 +42,12 @@ internal data class SavedPlaylistCatalog(
         imported = (listOf(linked.playlist) + imported).distinctBy(YouTubePlaylist::id),
         tracks = tracks + (linked.playlist.id to linked.tracks),
     )
+
+    /** A refresh's songs; [details] from a link read replace the playlist's title, count and cover in place. */
+    fun withRefreshed(id: String, songs: List<YouTubeTrack>, details: YouTubePlaylist?): SavedPlaylistCatalog {
+        val swap = { list: List<YouTubePlaylist> -> list.map { if (it.id == id && details != null) details else it } }
+        return copy(owned = swap(owned), imported = swap(imported), tracks = tracks + (id to songs))
+    }
 }
 
 internal object SavedPlaylistCodec {
@@ -175,11 +181,20 @@ internal class SavedPlaylistStore private constructor(context: Context) {
     suspend fun importPublic(linked: LinkedPlaylist): SavedPlaylistCatalog =
         mutate { it.withPublic(linked) }
 
-    suspend fun storeTracks(accountName: String, id: String, tracks: List<YouTubeTrack>): SavedPlaylistCatalog =
-        mutate(allowed = { it.ownerKey == accountKey(accountName) }) { previous ->
-            if (previous.playlists.none { it.id == id }) previous
-            else previous.copy(tracks = previous.tracks + (id to tracks))
+    /**
+     * Commits a refresh only to the snapshot it was read from: the same owner and the playlist
+     * still listed, so a disconnect, account switch or removal meanwhile drops it. False when dropped.
+     */
+    suspend fun refreshTracks(
+        ownerKey: String?, id: String, tracks: List<YouTubeTrack>, details: YouTubePlaylist?,
+    ): Boolean {
+        var committed = false
+        mutate(allowed = { it.ownerKey == ownerKey && it.playlists.any { playlist -> playlist.id == id } }) {
+            committed = true
+            it.withRefreshed(id, tracks, details)
         }
+        return committed
+    }
 
     suspend fun erase() = withContext(Dispatchers.IO) {
         mutex.withLock {

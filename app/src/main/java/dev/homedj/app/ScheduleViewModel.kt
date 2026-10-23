@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 internal data class ScheduleUiState(
@@ -36,9 +37,12 @@ internal class ScheduleViewModel(application: Application) : AndroidViewModel(ap
         refreshPermission()
         viewModelScope.launch {
             try {
+                val revision = mutableState.value.revision
                 val slots = store.read()
                 val cached = catalog.read().tracks.mapValues { it.value.size }
-                mutableState.value = mutableState.value.copy(slots = slots, cachedSongs = cached)
+                mutableState.value = mutableState.value.copy(
+                    slots = if (revision == mutableState.value.revision) slots else mutableState.value.slots,
+                    cachedSongs = cached)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
@@ -54,8 +58,9 @@ internal class ScheduleViewModel(application: Application) : AndroidViewModel(ap
     }
 
     /** A null [id] adds a new slot. */
-    fun save(id: String?, startHour: Int, endHour: Int, volume: Int, playlistIds: List<String>) {
-        val slot = ScheduleSlot(id ?: UUID.randomUUID().toString(), startHour, endHour, volume, playlistIds.distinct())
+    fun save(id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>, days: Set<Int>) {
+        val slot = ScheduleSlot(id ?: UUID.randomUUID().toString(), start / 60, end / 60, volume,
+            playlistIds.distinct(), days, start % 60, end % 60)
         mutate { slots -> slots.filterNot { it.id == slot.id } + slot }
     }
 
@@ -67,6 +72,10 @@ internal class ScheduleViewModel(application: Application) : AndroidViewModel(ap
         mutableState.value = mutableState.value.copy(saving = true, error = null)
         saveJob = viewModelScope.launch {
             try {
+                if (ModeStore(getApplication()).mode.first() != HomeDjMode.SERVER) {
+                    mutableState.value = mutableState.value.copy(saving = false, error = "Server role inactive")
+                    return@launch
+                }
                 val slots = store.mutate(change)
                 mutableState.value = mutableState.value.copy(
                     slots = slots, saving = false, revision = mutableState.value.revision + 1)

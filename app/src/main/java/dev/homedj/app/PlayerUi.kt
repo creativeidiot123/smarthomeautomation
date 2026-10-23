@@ -112,6 +112,7 @@ internal fun MusicShell(
     playerExtra: @Composable ColumnScope.() -> Unit = {},
     refreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
+    scrollable: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -121,6 +122,7 @@ internal fun MusicShell(
         ScreenFrame(
             title = HomeDjPage.entries[tab].label,
             subtitle = subtitle,
+            scrollable = scrollable,
             refreshing = refreshing,
             onRefresh = onRefresh,
             bottomBar = {

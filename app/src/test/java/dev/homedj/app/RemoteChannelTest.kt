@@ -37,6 +37,19 @@ class RemoteChannelTest {
         }
     }
 
+    @Test fun framesUpTo128KbRoundTripAndLargerAreRefused() {
+        val key = RemoteChannel.decodeKey(RemoteChannel.generateKey())!!
+        val challenge = ByteArray(16)
+        val bytes = ByteArrayOutputStream()
+        val large = "x".repeat(100_000)
+        RemoteChannel.send(DataOutputStream(bytes), key, challenge, JSONObject().put("lights", large))
+        assertEquals(large, RemoteChannel.receive(DataInputStream(ByteArrayInputStream(bytes.toByteArray())), key, challenge)
+            .getString("lights"))
+        assertThrows(IllegalArgumentException::class.java) {
+            RemoteChannel.send(DataOutputStream(ByteArrayOutputStream()), key, challenge, JSONObject().put("lights", "x".repeat(131_072)))
+        }
+    }
+
     @Test fun privateLanOnly() {
         assertTrue(RemotePrefs.validPrivateIpv4("192.168.1.24"))
         assertTrue(RemotePrefs.validPrivateIpv4("10.0.0.1"))

@@ -86,15 +86,6 @@ class MusicBreaksTest {
         repeat(1_000) { assertTrue(MusicBreakPolicy.fadeMillis(defaults, random) in 5_000L..10_000L) }
     }
 
-    @Test fun gainRisesSmoothlyFromSilentToFull() {
-        assertEquals(0f, MusicBreakPolicy.gain(0f), 0f)
-        assertEquals(1f, MusicBreakPolicy.gain(1f), 0f)
-        assertEquals(1f, MusicBreakPolicy.gain(2f), 0f)
-        assertEquals(0f, MusicBreakPolicy.gain(-1f), 0f)
-        val steps = (0..10).map { MusicBreakPolicy.gain(it / 10f) }
-        assertTrue(steps.zipWithNext().all { (a, b) -> b > a })
-    }
-
     @Test fun aScheduledQueueResumesOnlyInsideItsOwnSlotInstance() {
         assertTrue(MusicBreakPolicy.mayResume(null, null))
         assertTrue(MusicBreakPolicy.mayResume(null, "evening@20000"))

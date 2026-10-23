@@ -29,8 +29,8 @@ private const val SMALL_ART = "/mqdefault.jpg"
 private const val LARGE_ART = "/maxresdefault.jpg"
 
 /**
- * YouTube's public 16:9 thumbnail for a song, derived from its video ID only, so artwork is never
- * stored or sent between the phones. Null for anything that is not a valid video ID.
+ * YouTube's public 16:9 thumbnail for a song, derived from its video ID only. Each phone fetches
+ * and caches image bytes independently. Null for anything that is not a valid video ID.
  */
 internal fun youTubeArtworkUrl(id: String): String? =
     if (NativeAudioSource.validId(id)) ART_HOST + id + SMALL_ART else null

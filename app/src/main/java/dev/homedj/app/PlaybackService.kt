@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
  */
 class PlaybackService : MediaLibraryService() {
     private val roleScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var player: ExoPlayer? = null
+    private var player: PlaybackPlayer? = null
     private var librarySession: MediaLibrarySession? = null
     private var breaks: MusicBreaks? = null
 
@@ -40,17 +40,17 @@ class PlaybackService : MediaLibraryService() {
         super.onCreate()
         val resolver = HomeDjMediaResolver(this)
         val dataSource = ResolvingDataSource.Factory(DefaultDataSource.Factory(this), resolver)
-        val localPlayer = ExoPlayer.Builder(this)
+        fun deck() = ExoPlayer.Builder(this, normalizedRenderers(this))
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .build(),
-                true,
+                false, // PlaybackPlayer holds one audio-focus request for both decks.
             )
-            .setHandleAudioBecomingNoisy(true)
             .build()
+        val localPlayer = PlaybackPlayer(this, deck(), deck(), roleScope)
         player = localPlayer
         // Every new queue starts shuffled; the shuffle button still turns it off for that queue.
         localPlayer.shuffleModeEnabled = true
@@ -59,13 +59,19 @@ class PlaybackService : MediaLibraryService() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HomeDJ:musicBreak")
             .apply { setReferenceCounted(false) }
         val musicBreaks = MusicBreaks(
-            localPlayer, roleScope, wakeLock,
+            localPlayer, roleScope,
+            acquireWakeLock = { timeout -> wakeLock.acquire(timeout) },
+            releaseWakeLock = { if (wakeLock.isHeld) wakeLock.release() },
             onHoldReleased = { librarySession?.let { onUpdateNotification(it, false) } },
             canResume = {
                 !LiveAudioSink.active && MusicScheduler.queueMayPlayNow(this@PlaybackService, localPlayer)
             },
+            pauseAtEnd = { localPlayer.pauseAtEndOfMediaItems },
+            setPauseAtEnd = { localPlayer.pauseAtEndOfMediaItems = it },
+            resumeWithFade = localPlayer::playWithFade,
         )
         breaks = musicBreaks
+        localPlayer.onSafetyPause = musicBreaks::onUserPause
         localPlayer.addListener(musicBreaks)
         val scheduler = MusicScheduler(this, localPlayer, roleScope, musicBreaks)
         localPlayer.addListener(scheduler)

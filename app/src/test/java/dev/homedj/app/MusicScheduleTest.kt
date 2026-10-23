@@ -27,7 +27,97 @@ class MusicScheduleTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun codecRejectsUnknownVersion() {
-        ScheduleCodec.decode("""{"version":2,"slots":[]}""")
+        ScheduleCodec.decode("""{"version":99,"slots":[]}""")
+    }
+
+    @Test fun oldDailyScheduleKeepsItsHoursDaysVolumeAndPlaylists() {
+        val old = """{"version":1,"slots":[{"id":"morning","start":7,"end":10,"volume":40,"playlists":["PLmorning"]}]}"""
+        assertEquals(listOf(morning), ScheduleCodec.decode(old))
+        assertEquals(listOf(morning), ScheduleCodec.decode(ScheduleCodec.encode(ScheduleCodec.decode(old))))
+    }
+
+    @Test fun weeklyMinuteScheduleRoundTripsWithoutBecomingDaily() {
+        val weekly = morning.copy(days = setOf(1, 3, 5), startMinute = 15, endMinute = 45)
+        assertEquals(listOf(weekly), ScheduleCodec.decode(ScheduleCodec.encode(listOf(weekly))))
+        assertEquals("07:15–10:45", weekly.label)
+        // Version 2 prevents an old build from silently ignoring weekdays and playing every day.
+        assertEquals(2, org.json.JSONObject(ScheduleCodec.encode(listOf(weekly))).getInt("version"))
+    }
+
+    @Test fun corruptWeeklyFieldsDoNotTurnIntoAnEverydaySchedule() {
+        val weekly = morning.copy(days = setOf(1))
+        val encoded = org.json.JSONObject(ScheduleCodec.encode(listOf(weekly, evening)))
+        encoded.getJSONArray("slots").getJSONObject(0).remove("days")
+        assertEquals(listOf(evening), ScheduleCodec.decode(encoded.toString()))
+    }
+
+    @Test fun dailyWholeHourSchedulesRemainReadableByOlderBuilds() {
+        val encoded = org.json.JSONObject(ScheduleCodec.encode(slots))
+        assertEquals(1, encoded.getInt("version"))
+        assertEquals(slots, ScheduleCodec.decode(encoded.toString()))
+    }
+
+    @Test fun overlapsAreRejectedOnlyOnSharedWeekdaysIncludingNonAdjacentSlots() {
+        val monday = morning.copy(days = setOf(1))
+        val tuesday = morning.copy(id = "tuesday", days = setOf(2), startMinute = 30)
+        assertNull(SchedulePolicy.validate(listOf(monday, tuesday)))
+        val mondayLater = morning.copy(id = "later", days = setOf(1), startHour = 9)
+        assertEquals("Slots overlap", SchedulePolicy.validate(listOf(monday, tuesday, mondayLater)))
+        assertNull(SchedulePolicy.validate(listOf(monday.copy(endHour = 8, endMinute = 15),
+            mondayLater.copy(startHour = 8, startMinute = 15))))
+    }
+
+    @Test fun validationRejectsEmptyOrInvalidDaysAndMinuteBoundaries() {
+        assertEquals("Choose valid days", SchedulePolicy.validate(listOf(morning.copy(days = emptySet()))))
+        assertEquals("Choose valid days", SchedulePolicy.validate(listOf(morning.copy(days = setOf(0, 8)))))
+        assertEquals("End time must be after start time",
+            SchedulePolicy.validate(listOf(morning.copy(startMinute = 60))))
+        assertEquals("End time must be after start time",
+            SchedulePolicy.validate(listOf(evening.copy(endMinute = 1))))
+        assertEquals("End time must be after start time",
+            SchedulePolicy.validate(listOf(morning.copy(endHour = 7))))
+        assertNull(SchedulePolicy.validate(listOf(morning.copy(endHour = 7, endMinute = 1))))
+    }
+
+    @Test fun selectedDaysAndExactMinutesControlStartsAndStops() {
+        // 15 October 2026 is Thursday (ISO day 4).
+        val thursday = morning.copy(days = setOf(4), startMinute = 15, endMinute = 45)
+        val weekly = listOf(thursday)
+        assertNull(SchedulePolicy.active(weekly, at(7, 14)))
+        assertEquals(thursday, SchedulePolicy.active(weekly, at(7, 15))?.first)
+        assertEquals(thursday, SchedulePolicy.active(weekly, at(10, 44))?.first)
+        assertNull(SchedulePolicy.active(weekly, at(10, 45)))
+        assertNull(SchedulePolicy.active(weekly, at(8, day = 16)))
+        assertEquals(at(7, 15), SchedulePolicy.nextBoundary(weekly, at(7, 14)))
+        assertEquals(at(10, 45), SchedulePolicy.nextBoundary(weekly, at(7, 15)))
+        assertEquals(at(7, 15, day = 22), SchedulePolicy.nextBoundary(weekly, at(10, 45)))
+    }
+
+    @Test fun midnightEndIsArmedEvenWhenTheFollowingDayIsNotSelected() {
+        val thursday = listOf(evening.copy(days = setOf(4)))
+        assertEquals(at(0, day = 16), SchedulePolicy.nextBoundary(thursday, at(23, 59)))
+        assertNull(SchedulePolicy.active(thursday, at(0, day = 16)))
+        assertEquals(at(18, day = 22), SchedulePolicy.nextBoundary(thursday, at(0, day = 16)))
+    }
+
+    @Test fun nextBoundaryIsSortedAcrossDifferentSlotsAndWeekends() {
+        val friday = morning.copy(days = setOf(5))
+        val saturday = evening.copy(days = setOf(6), startMinute = 30)
+        assertEquals(at(7, day = 16), SchedulePolicy.nextBoundary(listOf(saturday, friday), at(23)))
+        assertEquals(at(18, 30, day = 17), SchedulePolicy.nextBoundary(listOf(friday, saturday), at(12, day = 16)))
+    }
+
+    @Test fun timeInputAcceptsMinutesAndMidnightButRejectsInvalidAndAmbiguousValues() {
+        assertEquals(495, scheduleTimeMinutes("08:15"))
+        assertEquals(495, scheduleTimeMinutes("8:15"))
+        assertEquals(0, scheduleTimeMinutes("00:00"))
+        assertEquals(1440, scheduleTimeMinutes("24:00", allowMidnight = true))
+        listOf("24:00", "23:60", "-1:00", "8:5", "08", "", "08:15x").forEach {
+            assertNull(it, scheduleTimeMinutes(it))
+        }
+        assertNull(scheduleTimeMinutes("24:01", allowMidnight = true))
+        assertEquals("24:00", scheduleTimeText(1440))
+        assertEquals("08:15", scheduleTimeText(495))
     }
 
     @Test fun validationRejectsBadSlots() {

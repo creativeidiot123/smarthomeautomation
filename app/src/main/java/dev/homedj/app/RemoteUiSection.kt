@@ -15,7 +15,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,13 +30,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import java.util.Date
 
 @Composable
-internal fun RemoteServerSection(running: Boolean, ip: String, code: String, onToggle: (Boolean) -> Unit) {
-    var revealCode by remember { mutableStateOf(false) }
+internal fun RemoteServerSection(
+    running: Boolean,
+    ip: String,
+    pairing: RemotePairingUiState,
+    onReplaceCode: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+    batteryUnrestricted: Boolean,
+    onBackgroundAccess: () -> Unit,
+) {
+    var revealCode by remember(pairing.serverCode) { mutableStateOf(false) }
+    val code = pairing.serverCode
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Connect your OnePlus", style = MaterialTheme.typography.titleLarge)
@@ -47,19 +54,38 @@ internal fun RemoteServerSection(running: Boolean, ip: String, code: String, onT
             )
             Text("Both phones must use the same private Wi-Fi.")
             Text("Samsung IP: $ip", style = MaterialTheme.typography.bodyLarge)
-            Text("Port: 47188", style = MaterialTheme.typography.bodySmall)
+            Text("Port: ${RemoteChannel.PORT}", style = MaterialTheme.typography.bodyLarge)
+            ServerPairingQr(ip, code, pairing.ready && !pairing.busy)
             Text("Pairing code", style = MaterialTheme.typography.labelLarge)
             if (revealCode) {
-                SelectionContainer { Text(code) }
+                SelectionContainer {
+                    Text(if (code.length == 26) code.chunked(5).joinToString(" ") else code,
+                        fontFamily = FontFamily.Monospace)
+                }
             } else {
                 Text("Hidden for privacy", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(onClick = { revealCode = !revealCode }) {
                 Text(if (revealCode) "Hide pairing code" else "Show pairing code")
             }
-            Button(onClick = { onToggle(!running) }) {
+            if (pairing.ready && code.length != 26) {
+                ShorterPairingCodeButton(!running && !pairing.busy, onReplaceCode)
+            }
+            pairing.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Text("Pair once. The code stays saved across app restarts and updates.")
+            Button(onClick = { onToggle(!running) }, enabled = pairing.ready && !pairing.busy) {
                 Text(if (running) "Turn off remote control" else "Turn on remote control")
             }
+            Text("Keep Samsung online overnight", style = MaterialTheme.typography.titleMedium)
+            Text(if (batteryUnrestricted) "Android idle access is allowed."
+                else "Allow background use so Android can receive commands with the screen off.")
+            FilledTonalButton(onClick = onBackgroundAccess) {
+                Text(if (batteryUnrestricted) "Open app battery settings" else "Allow background use")
+            }
+            Text("On Samsung, set HomeDJ battery use to Unrestricted and add it to Never sleeping apps " +
+                "under Battery > Background usage limits. Remote access keeps the CPU awake while on; " +
+                "keep this server plugged in.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -100,27 +126,36 @@ internal fun ActivityFeedCard(entries: List<ActivityEntry>, modifier: Modifier =
 
 @Composable
 internal fun RemoteControllerScreen(
+    sortState: PlaylistSortUiState,
+    onSort: (playlist: String, PlaylistSort) -> Unit,
     changing: Boolean,
     state: RemoteUiState,
     castState: CastState,
     onStartCast: () -> Unit,
     onStopCast: () -> Unit,
-    onConnect: (String, String) -> Unit,
+    pairing: RemotePairingUiState,
+    onPairHost: (String) -> Unit,
+    onPairPort: (String) -> Unit,
+    onPairCode: (String) -> Unit,
+    onScanPairing: () -> Unit,
+    onConnect: () -> Unit,
     onCommand: (String, Int?) -> Unit,
     onSeek: (Long) -> Unit,
     onBrowsePlaylists: () -> Unit,
     onBrowseDownloads: () -> Unit,
     onBrowseTracks: (String) -> Unit,
-    onLoadMore: () -> Unit,
+    onRetryBrowse: () -> Unit,
     onLibraryAction: (String, String) -> Unit,
     onDownloadChange: (remove: Boolean, kind: String, id: String) -> Unit,
     onImportLink: (String) -> Unit,
+    onRefreshPlaylist: (String) -> Unit,
     onBreaks: (MusicBreakSettings) -> Unit,
     onSwitch: () -> Unit,
+    presenceCard: @Composable () -> Unit,
+    lightsPage: @Composable () -> Unit,
+    dashboard: @Composable () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var host by remember { mutableStateOf(state.host) }
-    var code by remember { mutableStateOf(state.pairingCode) }
     // Samsung's status carries no song ID, so the player shows placeholder art on this phone.
     val nowPlaying = NowPlayingUi(
         title = state.title,
@@ -149,6 +184,7 @@ internal fun RemoteControllerScreen(
     }
     MusicShell(
         subtitle = "HomeDJ · OnePlus",
+        scrollable = tab != 0 || state.browserMode == "catalog",
         tab = tab,
         onTab = { tab = it },
         nowPlaying = nowPlaying,
@@ -156,7 +192,7 @@ internal fun RemoteControllerScreen(
         playerExtra = { SamsungVolume(state, onCommand) },
         refreshing = state.browserLoading,
         onRefresh = if (tab == HomeDjPage.HOME.ordinal && state.browserMode == "catalog" && state.connected)
-            onBrowsePlaylists else null,
+            onRetryBrowse else null,
     ) {
         if (!state.connected) {
             Card(
@@ -174,16 +210,20 @@ internal fun RemoteControllerScreen(
             }
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (tab == 0 && state.browserMode == "catalog") dashboard()
         when (tab) {
             0 -> ControllerLibrary(
+                sortState = sortState,
+                onSort = onSort,
                 state = state,
                 onBrowsePlaylists = onBrowsePlaylists,
                 onBrowseDownloads = onBrowseDownloads,
                 onBrowseTracks = onBrowseTracks,
-                onLoadMore = onLoadMore,
+                onRetryBrowse = onRetryBrowse,
                 onLibraryAction = onLibraryAction,
                 onDownloadChange = onDownloadChange,
                 onImportLink = onImportLink,
+                onRefreshPlaylist = onRefreshPlaylist,
             )
             1 -> {
                 SectionTitle("Samsung volume")
@@ -218,34 +258,12 @@ internal fun RemoteControllerScreen(
                     state.activity?.let { ActivityFeedCard(it) }
                 }
             }
-            2 -> {
-                Card(shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Connect to Samsung", style = MaterialTheme.typography.titleLarge)
-                        OutlinedTextField(
-                            value = host,
-                            onValueChange = { if (it.length <= 15) host = it },
-                            label = { Text("Samsung Wi-Fi IP") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        OutlinedTextField(
-                            value = code,
-                            onValueChange = { if (it.length <= 64) code = it },
-                            label = { Text("Pairing code") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Button(onClick = { onConnect(host, code) },
-                            enabled = !changing && host.isNotBlank() && code.isNotBlank()) {
-                            Text(if (state.connected) "Reconnect" else "Connect")
-                        }
-                        Text("Find both values in Samsung → Settings. Both phones must be on the same Wi-Fi.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
+            2 -> lightsPage()
+            3 -> {
+                RemotePairingForm(pairing, state.connected && pairing.host.trim() == state.host &&
+                    RemotePairingCode.normalize(pairing.code) == state.pairingCode, !changing,
+                    onPairHost, onPairPort, onPairCode, onScanPairing, onConnect)
+                presenceCard()
                 TextButton(onClick = onSwitch, enabled = !changing) {
                     Text("Change to Server mode")
                 }

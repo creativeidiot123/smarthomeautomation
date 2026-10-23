@@ -16,8 +16,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 
 /** Opt-in device-local download policy. Only Server mode is allowed to perform work. */
 internal class AutoLibraryConfig(context: Context) {
@@ -62,88 +64,112 @@ internal class AutoLibraryConfig(context: Context) {
         schedule()
     }
 
+    /**
+     * Hourly playlist refresh in Server mode, whether or not auto-save is on: link playlists and
+     * downloaded playlists follow YouTube too. UPDATE moves a job queued by an older build (every
+     * 12 hours, only while auto-save was on) to this period while keeping its schedule.
+     */
     fun schedule() {
-        val manager = WorkManager.getInstance(app)
-        if (!enabled) {
-            manager.cancelUniqueWork(WORK_NAME)
-            return
-        }
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .setRequiresBatteryNotLow(true)
             .build()
-        val periodic = PeriodicWorkRequestBuilder<AutoLibraryWorker>(12, TimeUnit.HOURS)
+        val periodic = PeriodicWorkRequestBuilder<AutoLibraryWorker>(1, TimeUnit.HOURS)
             .setConstraints(constraints)
             .build()
-        manager.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, periodic)
+        WorkManager.getInstance(app)
+            .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, periodic)
     }
 
     private companion object { const val WORK_NAME = "homedj_playlist_sync" }
 }
 
+/** A silently granted YouTube token (memory only) and the account it belongs to. */
+internal class YouTubeAccess(val token: String, val account: String)
+
 /**
- * Google authorization is silent only; an interactive resolution is never launched by a Worker.
- * Selected playlists enqueue native WorkManager audio downloads with stable media IDs.
+ * Google authorization without UI, for workers and LAN commands; null when it would need the
+ * person (never launched from here), is unavailable, or names no account.
+ */
+internal suspend fun silentYouTubeAccess(context: Context): YouTubeAccess? = try {
+    val request = AuthorizationRequest.builder()
+        .setRequestedScopes(listOf(Scope("https://www.googleapis.com/auth/youtube.readonly")))
+        .build()
+    val task = Identity.getAuthorizationClient(context.applicationContext).authorize(request)
+    val response = suspendCancellableCoroutine<com.google.android.gms.auth.api.identity.AuthorizationResult> { continuation ->
+        task.addOnSuccessListener { if (continuation.isActive) continuation.resume(it) }
+        task.addOnFailureListener { if (continuation.isActive) continuation.resumeWithException(it) }
+    }
+    val token = response.accessToken
+    val account = response.toGoogleSignInAccount()?.account?.name
+    if (response.hasResolution() || token.isNullOrBlank() || account.isNullOrBlank()) null
+    else YouTubeAccess(token, account)
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (failure: Exception) {
+    Log.i("HomeDJAuto", "Silent YouTube authorization unavailable: " + failure.javaClass.simpleName)
+    null
+}
+
+/**
+ * Hourly in Server mode: refreshes the connected account's playlist list, then every saved
+ * playlist's songs through [PlaylistRefresh] (songs new to a downloaded playlist queue for Wi-Fi),
+ * then, with auto-save on, queues whole auto-save playlists as before. Authorization is silent only.
  */
 class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
         val app = applicationContext
         val config = AutoLibraryConfig(app)
-        if (!config.enabled || ModeStore(app).mode.first() != HomeDjMode.SERVER) return Result.success()
+        val modes = ModeStore(app)
+        if (modes.mode.first() != HomeDjMode.SERVER) return Result.success()
         return try {
-            val request = AuthorizationRequest.builder()
-                .setRequestedScopes(listOf(Scope("https://www.googleapis.com/auth/youtube.readonly")))
-                .build()
-            val task = Identity.getAuthorizationClient(app).authorize(request)
-            val response = suspendCancellableCoroutine<com.google.android.gms.auth.api.identity.AuthorizationResult> { continuation ->
-                task.addOnSuccessListener { if (continuation.isActive) continuation.resume(it) }
-                task.addOnFailureListener { if (continuation.isActive) continuation.resumeWithException(it) }
+            val store = SavedPlaylistStore.shared(app)
+            // The token reads only its own account's snapshot; link playlists need none.
+            val access = silentYouTubeAccess(app)?.takeIf {
+                store.read().ownerKey == SavedPlaylistStore.accountKey(it.account)
             }
-            val token = response.accessToken
-            if (response.hasResolution() || token.isNullOrBlank()) {
-                Log.i("HomeDJAuto", "Silent account authorization unavailable; connect in Server mode")
-                return Result.success()
+            if (access != null) try {
+                val playlists = YouTubePlaylistRepository().playlists(access.token)
+                if (modes.mode.first() != HomeDjMode.SERVER) return Result.success()
+                store.replaceOwned(access.account, playlists) {
+                    it.ownerKey == SavedPlaylistStore.accountKey(access.account)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("HomeDJAuto", "Account playlist list refresh failed: " + failure.javaClass.simpleName)
             }
-            val account = response.toGoogleSignInAccount()?.account?.name
-            if (account.isNullOrBlank()) {
-                Log.w("HomeDJAuto", "Account identity unavailable; skipping background sync")
-                return Result.success()
-            }
-            val playlists = YouTubePlaylistRepository().playlists(token)
-            if (!config.isCurrent(account) || ModeStore(app).mode.first() != HomeDjMode.SERVER) {
-                return Result.success()
-            }
-            val saved = SavedPlaylistStore.shared(app).replaceOwned(account, playlists) {
-                config.isCurrent(account) && it.ownerKey == SavedPlaylistStore.accountKey(account)
-            }
-            if (!config.isCurrent(account)) return Result.success()
-            Log.i("HomeDJAuto", "Playlist metadata refreshed: count=" + saved.playlists.size)
-            val selected = config.playlistIds.intersect(saved.playlists.map { it.id }.toSet()).take(10)
-            val queued = hashSetOf<String>()
-            for (playlistId in selected) {
-                if (!config.isCurrent(account) || playlistId !in config.playlistIds) break
-                // One deleted/private/oversized playlist must not block the others every pass.
-                val tracks = try {
-                    YouTubePlaylistRepository().tracks(token, playlistId).also {
-                        SavedPlaylistStore.shared(app).storeTracks(account, playlistId, it)
-                    }
+            val autoSave = access != null && config.isCurrent(access.account)
+            var budget = PlaylistRefresh.MAX_QUEUED_PER_PASS
+            val playlists = store.read().playlists.take(PlaylistRefresh.MAX_PLAYLISTS_PER_PASS)
+            for (playlist in playlists) {
+                if (modes.mode.first() != HomeDjMode.SERVER) return Result.success()
+                // One deleted/private playlist must not block the others every pass.
+                try {
+                    // Auto-save playlists are queued whole below, as account saves.
+                    val wholeLater = autoSave && playlist.id in config.playlistIds
+                    val outcome = PlaylistRefresh.refresh(app, access?.token, playlist.id,
+                        budget = if (wholeLater) 0 else budget)
+                    if (outcome is RefreshOutcome.Done) budget -= outcome.queued
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
-                    Log.w("HomeDJAuto", "Playlist sync skipped: " + failure.javaClass.simpleName)
-                    continue
+                    Log.w("HomeDJAuto", "Playlist refresh skipped: " + failure.javaClass.simpleName)
                 }
-                for (track in tracks) {
-                    if (queued.size >= 150 || !config.isCurrent(account) ||
-                        playlistId !in config.playlistIds) break
-                    if (NativeAudioSource.validId(track.id) && queued.add(track.id)) {
-                        OfflineAudioLibrary.enqueue(app, track,
-                            SavedPlaylistStore.accountKey(account), playlistId)
-                    }
-                }
-                if (queued.size >= 150) break
             }
-            Log.i("HomeDJAuto", "Native offline downloads queued: " + queued.size)
+            if (access != null && autoSave) budget -= queueAutoSave(app, config, access.account, budget)
+            // One later Wi-Fi try for taps that failed in a way time may fix; never blocks the top-up.
+            try {
+                budget -= DownloadBackup.requeue(app, budget)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("HomeDJAuto", "Download backup pass skipped: " + failure.javaClass.simpleName)
+            }
+            // Safety net for whole-playlist downloads whose last top-up was skipped.
+            PlaylistDownloads.topUp(app)
+            Log.i("HomeDJAuto", "Playlists refreshed: count=" + playlists.size +
+                " queued=" + (PlaylistRefresh.MAX_QUEUED_PER_PASS - budget))
             Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -151,5 +177,22 @@ class AutoLibraryWorker(context: Context, parameters: WorkerParameters) : Corout
             Log.w("HomeDJAuto", "Background playlist sync failed: " + failure.javaClass.simpleName)
             if (runAttemptCount < 2) Result.retry() else Result.failure()
         }
+    }
+
+    /** Whole auto-save playlists from the refreshed snapshot; returns how many saves were queued. */
+    private suspend fun queueAutoSave(app: Context, config: AutoLibraryConfig, account: String, budget: Int): Int {
+        val saved = SavedPlaylistStore.shared(app).read()
+        val pending = OfflineAudioLibrary.pendingIds(app).first()
+        val owner = SavedPlaylistStore.accountKey(account)
+        var queued = 0
+        for (playlistId in config.playlistIds.intersect(saved.playlists.map { it.id }.toSet()).take(10)) {
+            for (track in saved.tracks[playlistId].orEmpty()) {
+                if (queued >= budget || !config.isCurrent(account) || playlistId !in config.playlistIds) return queued
+                // A save already pending (a tap or a refresh) is not started twice under another name.
+                if (!NativeAudioSource.validId(track.id) || track.id in pending) continue
+                if (withContext(Dispatchers.IO) { OfflineAudioLibrary.enqueue(app, track, owner, playlistId) }) queued++
+            }
+        }
+        return queued
     }
 }

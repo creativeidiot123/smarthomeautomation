@@ -101,11 +101,13 @@ class SongDetailsTest {
         assertEquals(1_000L, displayedPosition(1_000, at = 10_000, now = 9_000, playing = true, durationMs = 5_000))
     }
 
-    @Test fun playlistCountMentionsPartialDownloadsOnly() {
+    @Test fun playlistCountsReflectLiveDownloadsAndCompletion() {
         assertEquals("", songCountText(0, 0))
-        assertEquals("1 song", songCountText(1, 1))
+        assertEquals("1 song • 1 downloaded", songCountText(1, 1))
         assertEquals("12 songs", songCountText(12, 0))
         assertEquals("12 songs • 5 downloaded", songCountText(12, 5))
-        assertEquals("12 songs", songCountText(12, 12))
+        assertEquals("12 songs • 5 downloaded • 4 downloading", songCountText(12, 5, 4))
+        assertEquals("12 songs • 12 downloading", songCountText(12, 0, 12))
+        assertEquals("12 songs • 12 downloaded", songCountText(12, 12))
     }
 }

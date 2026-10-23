@@ -53,6 +53,7 @@ internal fun SongRow(
     modifier: Modifier = Modifier,
     saved: Boolean = false,
     saving: Boolean = false,
+    failed: Boolean = false,
     enabled: Boolean = true,
     menu: List<SongMenuAction> = emptyList(),
 ) {
@@ -72,8 +73,9 @@ internal fun SongRow(
         Artwork(artworkUrl, Modifier.size(56.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            val line = listOfNotNull("Saving…".takeIf { saving && !saved }, details.ifBlank { null })
-                .joinToString(" • ")
+            val failedNow = failed && !saved && !saving
+            val line = listOfNotNull("Saving…".takeIf { saving && !saved }, "Download failed".takeIf { failedNow },
+                details.ifBlank { null }).joinToString(" • ")
             if (saved || line.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (saved) {
@@ -81,8 +83,8 @@ internal fun SongRow(
                             modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(4.dp))
                     }
-                    Text(line, style = MaterialTheme.typography.bodyMedium, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(line, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = if (failedNow) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

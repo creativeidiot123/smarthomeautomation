@@ -12,7 +12,7 @@ enum class HomeDjMode { SERVER, CONTROLLER }
 internal fun parseHomeDjMode(stored: String?): HomeDjMode? =
     HomeDjMode.entries.firstOrNull { it.name == stored }
 
-private val Context.homeDjStore by preferencesDataStore(name = "homedj_settings")
+internal val Context.homeDjStore by preferencesDataStore(name = "homedj_settings")
 
 /** The selected role is device-local. Preferences DataStore is its only persistent owner. */
 class ModeStore(context: Context) {

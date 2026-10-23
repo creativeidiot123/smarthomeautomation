@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -25,13 +26,16 @@ import androidx.compose.ui.res.painterResource
 @Composable
 internal fun ControllerLibrary(
     state: RemoteUiState,
+    sortState: PlaylistSortUiState,
+    onSort: (playlist: String, PlaylistSort) -> Unit,
     onBrowsePlaylists: () -> Unit,
     onBrowseDownloads: () -> Unit,
     onBrowseTracks: (String) -> Unit,
-    onLoadMore: () -> Unit,
+    onRetryBrowse: () -> Unit,
     onLibraryAction: (String, String) -> Unit,
     onDownloadChange: (remove: Boolean, kind: String, id: String) -> Unit,
     onImportLink: (String) -> Unit,
+    onRefreshPlaylist: (String) -> Unit,
 ) {
     val enabled = state.connected
     var removeSong by rememberSaveable { mutableStateOf<String?>(null) }
@@ -53,17 +57,23 @@ internal fun ControllerLibrary(
             }
         }
     }
-    val songs = state.songs.map {
+    val songs = remember(state.songs) { state.songs.map {
         PageSong(it.id, it.title, songDetails(it.artist, it.durationSeconds), youTubeArtworkUrl(it.id),
-            saved = it.saved, saving = it.saving && !it.saved)
-    }
+            saved = it.saved, saving = it.saving && !it.saved, artist = it.artist, durationSeconds = it.durationSeconds,
+            failed = it.failed)
+    } }
     val footer: @Composable () -> Unit = {
-        val loaded = if (state.browserMode == "catalog") state.playlists.size else state.songs.size
-        if (loaded < state.browserTotal) {
-            OutlinedButton(onClick = onLoadMore, enabled = enabled && !state.browserLoading) {
-                Text("Show more (${loaded}/${state.browserTotal})")
+        if (state.browserLoading) Text(if (songs.isEmpty()) "Loading library…" else "Updating library…")
+        if (enabled && state.error != null && !state.browserLoading) {
+            OutlinedButton(onClick = onRetryBrowse) {
+                Text("Retry")
             }
         }
+        if (!enabled || state.browserCached) Text(
+            if (enabled && state.browserLoading) "Cached library. Checking Samsung for updates…"
+            else if (enabled) "Cached library. Retry to check Samsung for updates."
+            else "Cached library. Connect to Samsung to play or update songs.",
+            style = MaterialTheme.typography.bodySmall)
         state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
     }
 
@@ -75,7 +85,12 @@ internal fun ControllerLibrary(
                 else downloadState(songs.size, songs.count { it.saved }, songs.count { it.saving })
             PlaylistPage(
                 title = state.selectedPlaylistTitle,
-                countText = songCountText(state.browserTotal, state.savedCount.coerceAtLeast(0)),
+                sortKey = id,
+                sortState = sortState,
+                onSort = onSort,
+                countText = songCountText(state.browserTotal,
+                    if (state.savedCount >= 0) state.savedCount else songs.count { it.saved },
+                    if (state.savedCount >= 0) state.savingCount else songs.count { it.saving }),
                 artworkUrl = state.playlists.firstOrNull { it.id == id }?.artworkUrl?.ifBlank { null }
                     ?: songs.firstOrNull()?.artworkUrl,
                 songs = songs,
@@ -90,11 +105,16 @@ internal fun ControllerLibrary(
                 onDownload = { onLibraryAction("savePlaylist", id) },
                 onCancelDownload = { onDownloadChange(false, "playlist", id) },
                 onRemoveDownload = { onDownloadChange(true, "playlist", id) },
+                onRefresh = { onRefreshPlaylist(id) },
+                refreshing = state.refreshingPlaylist,
                 footer = footer,
             )
         }
         "downloads" -> PlaylistPage(
             title = "Downloaded on Samsung",
+            sortKey = DOWNLOADED_SORT_KEY,
+            sortState = sortState,
+            onSort = onSort,
             countText = songCountText(state.browserTotal, 0),
             artworkUrl = null,
             placeholder = R.drawable.ic_download_done,
@@ -133,15 +153,15 @@ internal fun ControllerLibrary(
             AdaptiveGrid(listOf<RemotePlaylist?>(null) + state.playlists) { playlist, modifier ->
                 if (playlist == null) {
                     PlaylistCard("Downloaded", "On Samsung", onClick = onBrowseDownloads, modifier = modifier,
-                        placeholder = R.drawable.ic_download_done, enabled = enabled)
+                        placeholder = R.drawable.ic_download_done)
                 } else {
                     PlaylistCard(playlist.title, songCountText(playlist.count, 0).ifBlank { "Empty" },
                         onClick = { onBrowseTracks(playlist.id) }, modifier = modifier,
-                        artworkUrl = playlist.artworkUrl.ifBlank { null }, enabled = enabled)
+                        artworkUrl = playlist.artworkUrl.ifBlank { null })
                 }
             }
             if (!state.browserLoading && state.playlists.isEmpty() && enabled) {
-                Text("No saved playlists yet. Add a playlist link or sync YouTube on Samsung.",
+                Text("No saved playlists yet. Add a playlist link.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             footer()

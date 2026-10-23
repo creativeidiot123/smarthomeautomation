@@ -8,13 +8,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 
 /** Read-only browsing and authenticated media commands against the Samsung's local library. */
 internal class RemoteLibraryCommands(private val app: Context) {
     private val catalog = SavedPlaylistStore.shared(app)
-    private val pageSize = 40
 
     suspend fun handle(request: JSONObject, player: MediaController): JSONObject {
         val action = request.optString("command")
@@ -25,22 +23,23 @@ internal class RemoteLibraryCommands(private val app: Context) {
             return withContext(Dispatchers.IO) {
                 val saved = catalog.read()
                 when (action) {
-                    "catalog" -> page(saved.playlists, offset) { SavedPlaylistCodec.playlistJson(it) }
+                    "catalog" -> remoteLibraryPage(saved.playlists, offset) { SavedPlaylistCodec.playlistJson(it) }
                     "tracks" -> {
                         if (saved.playlists.none { it.id == id }) return@withContext error("Unknown playlist")
                         val pending = OfflineAudioLibrary.pendingIds(app).first()
+                        val failed = OfflineAudioLibrary.failedIds(app).first()
                         val songs = saved.tracks[id].orEmpty()
-                        val local = songs.mapNotNullTo(hashSetOf()) { song ->
-                            song.id.takeIf { OfflineAudioLibrary.existing(app, it) != null }
-                        }
-                        // "saving", "artist", "duration" and the counts are optional: older controllers ignore them.
-                        page(songs, offset) {
+                        val local = OfflineAudioLibrary.savedIds(app)
+                        // "saving", "failed", "artist", "duration" and the counts are optional: older controllers ignore them.
+                        remoteLibraryPage(songs, offset) {
+                            val saving = it.id !in local && it.id in pending
                             SavedPlaylistCodec.trackJson(it)
-                                .put("saved", it.id in local).put("saving", it.id !in local && it.id in pending)
-                        }.put("savedCount", local.size)
+                                .put("saved", it.id in local).put("saving", saving)
+                                .put("failed", it.id !in local && !saving && it.id in failed)
+                        }.put("savedCount", songs.count { it.id in local })
                             .put("savingCount", songs.count { it.id !in local && it.id in pending })
                     }
-                    else -> page(OfflineAudioLibrary.savedTracks(app), offset) {
+                    else -> remoteLibraryPage(OfflineAudioLibrary.savedTracks(app), offset) {
                         SavedPlaylistCodec.trackJson(it).put("saved", true)
                     }
                 }
@@ -48,6 +47,7 @@ internal class RemoteLibraryCommands(private val app: Context) {
         }
 
         if (action == "importPlaylist") return importLink(request.optString("link"))
+        if (action == "refreshPlaylist") return refreshPlaylist(id)
         if (action == "cancelSave" || action == "removeSaved") {
             return changeDownload(action == "removeSaved", request.optString("kind"), id)
         }
@@ -73,20 +73,24 @@ internal class RemoteLibraryCommands(private val app: Context) {
                 saved.tracks[id].orEmpty()
                     .filter { NativeAudioSource.validId(it.id) }
                     .distinctBy(YouTubeTrack::id)
-                    .take(if (action == "savePlaylist") 250 else 500)
+                    .let { if (action == "savePlaylist") it else it.take(MAX_PLAYLIST_SONGS) }
             }
         }
         if (tracks.isEmpty()) return error("No cached songs. Open this playlist on Samsung to sync it.")
         // Titles make the reply readable in both phones' activity feeds.
         val name = if (action.endsWith("Track")) tracks[start].title
             else saved.playlists.firstOrNull { it.id == id }?.title ?: "playlist"
-        if (action.startsWith("save")) {
-            withContext(Dispatchers.IO) {
-                tracks.forEach { OfflineAudioLibrary.enqueue(app, it) }
-            }
+        if (action == "saveTrack") {
+            val queued = withContext(Dispatchers.IO) { OfflineAudioLibrary.enqueue(app, tracks[0]) }
             return JSONObject().put("ok", true).put("message",
-                if (action == "saveTrack") "Saving $name on Samsung"
-                else "Saving ${tracks.size} songs from $name on Samsung")
+                if (queued) "Saving $name on Samsung" else "$name is already downloaded on Samsung")
+        }
+        if (action == "savePlaylist") {
+            // Songs Samsung already has are skipped; past one batch the rest follow as saves end.
+            val started = PlaylistDownloads.start(app, id, tracks)
+            return JSONObject().put("ok", true).put("message",
+                if (started.queued == 0) "All of $name is already downloaded on Samsung"
+                else "Saving ${started.queued} songs from $name on Samsung." + batchNote(started.later))
         }
         val items = tracks.map { youTubeMediaItem(it) }
         if (listed != null) player.setMediaItems(items, start, C.TIME_UNSET) else player.setMediaItems(items)
@@ -120,6 +124,30 @@ internal class RemoteLibraryCommands(private val app: Context) {
     }
 
     /**
+     * Newer controllers only (an older Samsung answers "Unknown command"). Samsung reads the
+     * playlist online itself, with its own account's silent token when the playlist is the
+     * account's, so the reply can take seconds; the controller only names a saved playlist.
+     */
+    private suspend fun refreshPlaylist(id: String): JSONObject {
+        val saved = catalog.read()
+        if (saved.playlists.none { it.id == id }) return error("Unknown playlist")
+        return try {
+            val token = silentYouTubeAccess(app)
+                ?.takeIf { saved.ownerKey == SavedPlaylistStore.accountKey(it.account) }?.token
+            when (val outcome = PlaylistRefresh.refresh(app, token, id)) {
+                is RefreshOutcome.Done -> JSONObject().put("ok", true).put("message", refreshMessage(outcome))
+                    .put("added", outcome.added).put("queued", outcome.queued)
+                else -> error(refreshError(outcome))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.w("HomeDJRemote", "Remote playlist refresh failed: " + failure.javaClass.simpleName)
+            error("Samsung could not refresh this playlist. Check Samsung's internet.")
+        }
+    }
+
+    /**
      * Newer controllers only (an older Samsung answers "Unknown command"). Samsung decides which
      * songs a playlist means from its own catalog; the controller only names the playlist or song.
      */
@@ -145,13 +173,6 @@ internal class RemoteLibraryCommands(private val app: Context) {
             else OfflineAudioLibrary.remove(app, ids)
         return JSONObject().put("ok", true).put("message",
             if (kind == "track") "Removed $name from Samsung" else "Removed " + songCount(removed) + " of $name from Samsung")
-    }
-
-    private fun <T> page(items: List<T>, offset: Int, make: (T) -> JSONObject): JSONObject {
-        val array = JSONArray()
-        items.drop(offset).take(pageSize).forEach { array.put(make(it)) }
-        return JSONObject().put("ok", true).put("items", array)
-            .put("total", items.size).put("offset", offset)
     }
 
     internal companion object {

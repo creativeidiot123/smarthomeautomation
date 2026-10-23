@@ -18,6 +18,15 @@ class PlaylistQueueTest {
         assertEquals(4, queue.start)
     }
 
+    @Test fun aPlaylistOfMoreThan500SongsQueuesEverySong() {
+        // A 700-song playlist used to stop at 500, so its last songs never played.
+        val long = (0 until 700).map { YouTubeTrack(id(it), "Song $it") }
+        val queue = playlistQueue(long, id(650))
+        assertEquals(long, queue?.tracks)
+        assertEquals(650, queue?.start)
+        assertEquals(2_000, MAX_PLAYLIST_SONGS)
+    }
+
     @Test fun songOutsideThePlaylistQueuesNothing() {
         assertNull(playlistQueue(playlist, id(42)))
         assertNull(playlistQueue(playlist, "../bad"))

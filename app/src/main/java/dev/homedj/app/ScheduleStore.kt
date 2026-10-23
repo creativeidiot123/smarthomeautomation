@@ -36,7 +36,7 @@ internal class ScheduleStore private constructor(context: Context) {
     suspend fun mutate(change: (List<ScheduleSlot>) -> List<ScheduleSlot>): List<ScheduleSlot> =
         withContext(Dispatchers.IO) {
             mutex.withLock {
-                val next = change(snapshot()).sortedBy(ScheduleSlot::startHour)
+                val next = change(snapshot()).sortedBy(ScheduleSlot::startMinutes)
                 SchedulePolicy.validate(next)?.let { throw IllegalArgumentException(it) }
                 val bytes = ScheduleCodec.encode(next).toByteArray(Charsets.UTF_8)
                 if (bytes.size > MAX_BYTES) throw IOException("Schedule exceeded storage limit")

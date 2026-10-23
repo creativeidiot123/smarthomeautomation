@@ -114,3 +114,10 @@ internal fun downloadState(total: Int, saved: Int, saving: Int): DownloadState =
 /** "1 downloaded song" or "3 downloaded songs", for removal messages on both phones. */
 internal fun songCount(downloaded: Int): String =
     if (downloaded == 1) "1 downloaded song" else "$downloaded downloaded songs"
+
+/** Notice after queuing a list's saves; songs that already have a file are never queued again. */
+internal fun queuedNotice(queued: Int, source: String): String = when (queued) {
+    0 -> "All these songs are already downloaded."
+    1 -> "Queued 1 song $source."
+    else -> "Queued $queued songs $source."
+}

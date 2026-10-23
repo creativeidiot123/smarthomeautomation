@@ -9,9 +9,15 @@ import java.net.Inet4Address
 internal class RemotePrefs(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("remote_pairing", Context.MODE_PRIVATE)
 
-    fun serverKey(): String {
-        prefs.getString("server_key", null)?.let { if (RemoteChannel.decodeKey(it) != null) return it }
-        return RemoteChannel.generateKey().also { prefs.edit().putString("server_key", it).commit() }
+    fun serverKey(): String = synchronized(keyLock) {
+        prefs.getString("server_key", null)?.let { if (RemoteChannel.decodeKey(it) != null) return@synchronized it }
+        RemoteChannel.generateKey().also { check(prefs.edit().putString("server_key", it).commit()) }
+    }
+
+    /** Explicit replacement only, while remote control is disabled; old pairings are revoked. */
+    fun replaceServerKey(): String = synchronized(keyLock) {
+        check(!enabled)
+        RemoteChannel.generateKey().also { check(prefs.edit().putString("server_key", it).commit()) }
     }
 
     var enabled: Boolean
@@ -23,10 +29,12 @@ internal class RemotePrefs(context: Context) {
 
     fun saveClient(host: String, key: String) {
         require(validPrivateIpv4(host) && RemoteChannel.decodeKey(key) != null)
-        prefs.edit().putString("host", host).putString("client_key", key.trim()).apply()
+        prefs.edit().putString("host", host).putString("client_key", RemotePairingCode.normalize(key)).apply()
     }
 
     companion object {
+        private val keyLock = Any()
+
         fun validPrivateIpv4(host: String): Boolean {
             val parts = host.split('.')
             if (parts.size != 4 || parts.any { it.isEmpty() || it.length > 3 || it.any { char -> !char.isDigit() } }) {

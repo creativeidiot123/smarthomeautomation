@@ -33,6 +33,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +49,7 @@ import androidx.compose.ui.unit.dp
 internal enum class HomeDjPage(val label: String, @param:DrawableRes val icon: Int) {
     HOME("Home", R.drawable.ic_home),
     SCHEDULE("Schedule", R.drawable.ic_schedule),
+    LIGHTS("Lights", R.drawable.ic_lightbulb),
     SETTINGS("Settings", R.drawable.ic_settings),
 }
 
@@ -74,6 +76,7 @@ internal fun ScreenFrame(
     bottomBar: @Composable () -> Unit = {},
     refreshing: Boolean = false,
     onRefresh: (() -> Unit)? = null,
+    scrollable: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     // Each page keeps its own scroll position.
@@ -93,9 +96,9 @@ internal fun ScreenFrame(
         bottomBar = bottomBar,
     ) { insets ->
         val body = @Composable {
-            Column(Modifier.fillMaxSize().imePadding().verticalScroll(scroll)) {
+            Column(Modifier.fillMaxSize().imePadding().then(if (scrollable) Modifier.verticalScroll(scroll) else Modifier)) {
                 Column(
-                    Modifier.fillMaxWidth().widthIn(max = 760.dp)
+                    Modifier.fillMaxWidth().then(if (scrollable) Modifier else Modifier.weight(1f)).widthIn(max = 760.dp)
                         .align(Alignment.CenterHorizontally).padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     content = content,
@@ -144,12 +147,17 @@ internal fun RolePicker(changing: Boolean, onServer: () -> Unit, onController: (
 
 @Composable
 internal fun ServerScreen(
+    sortState: PlaylistSortUiState,
+    onSort: (playlist: String, PlaylistSort) -> Unit,
     status: ServerPlaybackUiState,
     youtubeState: YouTubeUiState,
     remoteRunning: Boolean,
     remoteAddress: String,
-    remotePairingCode: String,
+    remotePairing: RemotePairingUiState,
+    onReplacePairingCode: () -> Unit,
     onRemoteToggle: (Boolean) -> Unit,
+    batteryUnrestricted: Boolean,
+    onBackgroundAccess: () -> Unit,
     changing: Boolean,
     onPickAudio: () -> Unit,
     onPlaySharedDownloads: () -> Unit,
@@ -167,6 +175,7 @@ internal fun ServerScreen(
     onPlayTracks: (List<YouTubeTrack>, Int) -> Unit,
     onDownloadTrack: (YouTubeTrack) -> Unit,
     onDownloadSelected: () -> Unit,
+    onRefreshSelected: () -> Unit,
     onCancelSaves: (List<YouTubeTrack>) -> Unit,
     onRemoveDownloads: (List<YouTubeTrack>, String?) -> Unit,
     onAutoEnabled: (Boolean) -> Unit,
@@ -177,17 +186,36 @@ internal fun ServerScreen(
     onJumpTo: (Int) -> Unit,
     onPlayNext: (YouTubeTrack) -> Unit,
     onAddToQueue: (YouTubeTrack) -> Unit,
-    onSaveSlot: (id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>) -> Unit,
+    onSaveSlot: (id: String?, start: Int, end: Int, volume: Int, playlistIds: List<String>, days: Set<Int>) -> Unit,
     onDeleteSlot: (String) -> Unit,
     onAllowExactAlarms: () -> Unit,
     breakSettings: MusicBreakSettings,
     breakResumesAt: Long?,
     onBreaks: (MusicBreakSettings) -> Unit,
     activity: List<ActivityEntry>,
+    presenceCard: @Composable () -> Unit,
+    lightsPage: @Composable () -> Unit,
+    dashboard: @Composable () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     // Hoisted out of the Home tab so the open playlist survives switching tabs.
     var homeView by rememberSaveable { mutableStateOf(HOME_GRID) }
+    var schedulePlaylist by rememberSaveable { mutableStateOf<String?>(null) }
+    var scheduleRevision by rememberSaveable { mutableIntStateOf(scheduleState.revision) }
+    LaunchedEffect(scheduleState.revision) {
+        if (scheduleRevision != scheduleState.revision) {
+            scheduleRevision = scheduleState.revision
+            schedulePlaylist = null
+        }
+    }
+    schedulePlaylist?.let { playlistId ->
+        SlotEditor(
+            slot = null, state = scheduleState, playlists = youtubeState.playlists,
+            initialPlaylistIds = listOf(playlistId),
+            onImportPlaylist = onImportPlaylist, onSave = onSaveSlot, onDelete = onDeleteSlot,
+            onAllowExactAlarms = onAllowExactAlarms, onDismiss = { schedulePlaylist = null },
+        )
+    }
     val snapshot = status.snapshot
     val nowPlaying = NowPlayingUi(
         title = snapshot.title,
@@ -210,6 +238,7 @@ internal fun ServerScreen(
     }
     MusicShell(
         subtitle = "HomeDJ · Samsung",
+        scrollable = tab != 0 || homeView == HOME_GRID,
         tab = tab,
         onTab = { tab = it },
         nowPlaying = nowPlaying,
@@ -224,26 +253,32 @@ internal fun ServerScreen(
         }
         status.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         when (tab) {
-            0 -> YouTubeSection(
-                state = youtubeState,
-                view = homeView,
-                onViewChange = { homeView = it },
-                enabled = status.connected && !changing,
-                onConnect = onConnectYouTube,
-                onPickAudio = onPickAudio,
-                onSelectPlaylist = onSelectPlaylist,
-                onImportPlaylist = onImportPlaylist,
-                onDownloadPlaylist = onDownloadPlaylist,
-                onStreamTrack = onStreamTrack,
-                onPlayTracks = onPlayTracks,
-                onPlayNext = onPlayNext,
-                onAddToQueue = onAddToQueue,
-                onDownloadTrack = onDownloadTrack,
-                onDownloadSelected = onDownloadSelected,
-                onCancelSaves = onCancelSaves,
-                onRemoveDownloads = onRemoveDownloads,
-                onToggleAutoPlaylist = onToggleAutoPlaylist,
-            )
+            0 -> {
+                if (homeView == HOME_GRID) dashboard()
+                YouTubeSection(
+                    sortState = sortState,
+                    onSort = onSort,
+                    state = youtubeState,
+                    view = homeView,
+                    onViewChange = { homeView = it },
+                    enabled = status.connected && !changing,
+                    onPickAudio = onPickAudio,
+                    onSelectPlaylist = onSelectPlaylist,
+                    onImportPlaylist = onImportPlaylist,
+                    onDownloadPlaylist = onDownloadPlaylist,
+                    onStreamTrack = onStreamTrack,
+                    onPlayTracks = onPlayTracks,
+                    onPlayNext = onPlayNext,
+                    onAddToQueue = onAddToQueue,
+                    onDownloadTrack = onDownloadTrack,
+                    onDownloadSelected = onDownloadSelected,
+                    onRefreshSelected = onRefreshSelected,
+                    onCancelSaves = onCancelSaves,
+                    onRemoveDownloads = onRemoveDownloads,
+                    onToggleAutoPlaylist = onToggleAutoPlaylist,
+                    onAddToSchedule = { schedulePlaylist = it },
+                )
+            }
             1 -> {
                 ScheduleStatusCard(status, scheduleState.slots.isNotEmpty(), onResumeSchedule)
                 ScheduleSection(
@@ -257,14 +292,19 @@ internal fun ServerScreen(
                 MusicBreaksCard(breakSettings, breakResumesAt, enabled = !changing, onChange = onBreaks)
                 ActivityFeedCard(activity)
             }
-            2 -> {
+            2 -> lightsPage()
+            3 -> {
                 YouTubeAccountCard(youtubeState, onConnectYouTube, onDisconnectYouTube, onAutoEnabled)
                 RemoteServerSection(
                     running = remoteRunning,
                     ip = remoteAddress,
-                    code = remotePairingCode,
+                    pairing = remotePairing,
+                    onReplaceCode = onReplacePairingCode,
                     onToggle = onRemoteToggle,
+                    batteryUnrestricted = batteryUnrestricted,
+                    onBackgroundAccess = onBackgroundAccess,
                 )
+                presenceCard()
                 OutlinedButton(onClick = onPlaySharedDownloads,
                     enabled = status.connected && !changing,
                     modifier = Modifier.fillMaxWidth()) { Text("Play older shared audio") }

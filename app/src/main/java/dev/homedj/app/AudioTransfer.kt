@@ -11,6 +11,9 @@ import kotlin.coroutines.coroutineContext
 /** A transfer that cannot succeed by resuming (budget, consent, bad response); its partial is discarded. */
 internal class DownloadRejected(message: String) : IOException(message)
 
+/** The media CDN answered a chunk with an unexpected status; the message format feeds failure codes. */
+internal class AudioHttpStatus(val status: Int) : IOException("Audio HTTP status $status")
+
 /**
  * NewPipe-downloader-style ranged transfer: 512 KiB Range requests appended to a partial file,
  * so a later worker attempt resumes where an interrupted one stopped. Requests use the same
@@ -58,7 +61,7 @@ internal object AudioTransfer {
                         throw DownloadRejected("Audio redirected off the media CDN")
                     }
                     if (status == 416) throw DownloadRejected("Partial audio no longer matches the stream")
-                    if (status != 206) throw IOException("Audio HTTP status $status")
+                    if (status != 206) throw AudioHttpStatus(status)
                     val contentType = connection.contentType?.lowercase(java.util.Locale.ROOT).orEmpty()
                     if (!contentType.startsWith("audio/") && !contentType.startsWith("video/")) {
                         throw DownloadRejected("Media server returned a non-audio response")

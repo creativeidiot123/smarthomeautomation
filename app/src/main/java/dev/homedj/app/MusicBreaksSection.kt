@@ -65,7 +65,7 @@ internal fun MusicBreaksCard(
                             resumesAt != null -> "On a break · music returns around " +
                                 DateFormat.getTimeFormat(context).format(Date(resumesAt)) +
                                 ". Press Play to resume now."
-                            settings.enabled -> "Random quiet breaks between music sessions."
+                            settings.enabled -> "Songs finish before each quiet break."
                             else -> "Off · music plays without breaks."
                         },
                         style = MaterialTheme.typography.bodyMedium,
@@ -102,7 +102,7 @@ internal fun MusicBreaksCard(
                 ChanceRow("How often long silences happen", settings.longSilenceChance, canEdit) {
                     onChange(settings.copy(longSilenceChance = it))
                 }
-                RangeRow("Fade in and out", "s", settings.fadeMin, settings.fadeMax,
+                RangeRow("Fade in after a break", "s", settings.fadeMin, settings.fadeMax,
                     MusicBreakSettings.FADE_SECONDS, canEdit) { min, max ->
                     onChange(settings.copy(fadeMin = min, fadeMax = max))
                 }

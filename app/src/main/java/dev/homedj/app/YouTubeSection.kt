@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -26,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,10 +41,11 @@ internal const val HOME_DOWNLOADS = "downloads"
 @Composable
 internal fun YouTubeSection(
     state: YouTubeUiState,
+    sortState: PlaylistSortUiState,
+    onSort: (playlist: String, PlaylistSort) -> Unit,
     view: String,
     onViewChange: (String) -> Unit,
     enabled: Boolean,
-    onConnect: () -> Unit,
     onPickAudio: () -> Unit,
     onSelectPlaylist: (String) -> Unit,
     onImportPlaylist: (String) -> Unit,
@@ -55,9 +56,11 @@ internal fun YouTubeSection(
     onAddToQueue: (YouTubeTrack) -> Unit,
     onDownloadTrack: (YouTubeTrack) -> Unit,
     onDownloadSelected: () -> Unit,
+    onRefreshSelected: () -> Unit,
     onCancelSaves: (List<YouTubeTrack>) -> Unit,
     onRemoveDownloads: (List<YouTubeTrack>, String?) -> Unit,
     onToggleAutoPlaylist: (String) -> Unit,
+    onAddToSchedule: (String) -> Unit,
 ) {
     // The song whose "Remove download" waits for confirmation.
     var removeSong by rememberSaveable { mutableStateOf<String?>(null) }
@@ -91,11 +94,17 @@ internal fun YouTubeSection(
                 val tracks = state.tracks
                 val saved = tracks.count { it.id in state.offlineIds }
                 val saving = tracks.count { it.id in state.savingIds && it.id !in state.offlineIds }
+                val pageSongs = remember(tracks, state.offlineIds, state.savingIds, state.failedIds) {
+                    tracks.map { it.toPageSong(it.id in state.offlineIds, it.id in state.savingIds, failed = it.id in state.failedIds) }
+                }
                 PlaylistPage(
                     title = playlist?.title ?: "Playlist",
-                    countText = if (state.loadingTracks) "Loading songs…" else songCountText(tracks.size, saved),
+                    sortKey = selected,
+                    sortState = sortState,
+                    onSort = onSort,
+                    countText = if (state.loadingTracks) "Loading songs…" else songCountText(tracks.size, saved, saving),
                     artworkUrl = playlist?.artworkUrl?.ifBlank { null } ?: tracks.firstOrNull()?.id?.let(::youTubeArtworkUrl),
-                    songs = tracks.map { it.toPageSong(it.id in state.offlineIds, it.id in state.savingIds) },
+                    songs = pageSongs,
                     loading = state.loadingTracks,
                     enabled = enabled,
                     onBack = { onViewChange(HOME_GRID) },
@@ -107,6 +116,9 @@ internal fun YouTubeSection(
                     onDownload = onDownloadSelected,
                     onCancelDownload = { onCancelSaves(tracks) },
                     onRemoveDownload = { onRemoveDownloads(tracks, selected) },
+                    onAddToSchedule = { onAddToSchedule(selected) },
+                    onRefresh = onRefreshSelected,
+                    refreshing = state.refreshingTracks,
                     below = {
                         if (state.authorized) {
                             val auto = selected in state.autoDownloadIds
@@ -129,10 +141,15 @@ internal fun YouTubeSection(
             val songs = state.downloads
             PlaylistPage(
                 title = "Downloaded",
+                sortKey = DOWNLOADED_SORT_KEY,
+                sortState = sortState,
+                onSort = onSort,
                 countText = songCountText(songs.size, 0),
                 artworkUrl = null,
                 placeholder = R.drawable.ic_download_done,
-                songs = songs.map { it.toPageSong(saved = true, saving = false, art = state.downloadArt[it.id]) },
+                songs = remember(songs, state.downloadArt) {
+                    songs.map { it.toPageSong(saved = true, saving = false, art = state.downloadArt[it.id]) }
+                },
                 loading = false,
                 enabled = enabled,
                 onBack = { onViewChange(HOME_GRID) },
@@ -143,7 +160,7 @@ internal fun YouTubeSection(
                 below = { Messages(state) },
             )
         }
-        else -> LibraryGrid(state, enabled, onConnect, onPickAudio, onImportPlaylist, onDownloadPlaylist,
+        else -> LibraryGrid(state, enabled, onPickAudio, onImportPlaylist, onDownloadPlaylist,
             onOpenDownloads = { onViewChange(HOME_DOWNLOADS) },
             onOpenPlaylist = { id ->
                 onViewChange(HOME_PLAYLIST)
@@ -156,7 +173,6 @@ internal fun YouTubeSection(
 private fun LibraryGrid(
     state: YouTubeUiState,
     enabled: Boolean,
-    onConnect: () -> Unit,
     onPickAudio: () -> Unit,
     onImportPlaylist: (String) -> Unit,
     onDownloadPlaylist: (String) -> Unit,
@@ -165,20 +181,6 @@ private fun LibraryGrid(
 ) {
     var showLink by rememberSaveable { mutableStateOf(false) }
     var playlistLink by rememberSaveable { mutableStateOf("") }
-    if (!state.authorized) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-            shape = RoundedCornerShape(20.dp),
-        ) {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Sign in to see your playlists", style = MaterialTheme.typography.titleMedium)
-                Text(if (state.savedSnapshot && state.playlists.isNotEmpty())
-                    "Showing saved playlists. Connect YouTube to refresh them."
-                    else "Connect YouTube on Samsung, or add a public playlist by link.")
-                Button(onClick = onConnect) { Text("Connect YouTube") }
-            }
-        }
-    }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("Playlists", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.weight(1f))
@@ -227,19 +229,23 @@ private fun LibraryGrid(
         }
     }
     if (!state.loadingPlaylists && state.playlists.isEmpty()) {
-        Text("No playlists yet. Connect YouTube or add a playlist link.",
+        Text("No playlists yet. Add a playlist link.",
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
-/** YouTube account, automatic sync and disconnect, on Samsung's Settings tab. */
+/**
+ * Sync, auto-save and disconnect for a Google account granted earlier, on Samsung's Settings tab.
+ * HomeDJ offers no way to connect one; without an account nothing is shown.
+ */
 @Composable
 internal fun YouTubeAccountCard(
     state: YouTubeUiState,
-    onConnect: () -> Unit,
+    onSync: () -> Unit,
     onDisconnect: () -> Unit,
     onAutoEnabled: (Boolean) -> Unit,
 ) {
+    if (!state.authorized) return
     var confirmDisconnect by rememberSaveable { mutableStateOf(false) }
     if (confirmDisconnect) {
         ConfirmDialog("Disconnect YouTube?",
@@ -250,20 +256,15 @@ internal fun YouTubeAccountCard(
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("YouTube", style = MaterialTheme.typography.titleLarge)
-            if (!state.authorized) {
-                Text("Not connected. Playlists added by link work without an account.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Button(onClick = onConnect) { Text("Connect YouTube") }
-                return@Column
-            }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Account connected", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton(onClick = onConnect, enabled = !state.loadingPlaylists) { Text("Sync playlists") }
+                TextButton(onClick = onSync, enabled = !state.loadingPlaylists) { Text("Sync playlists") }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Automatic sync", style = MaterialTheme.typography.titleMedium)
-                    Text("About every 12 hours on unmetered Wi-Fi.", style = MaterialTheme.typography.bodySmall)
+                    Text("Auto-save playlists", style = MaterialTheme.typography.titleMedium)
+                    Text("Playlists marked Auto-save download in full on unmetered Wi-Fi. Every playlist refreshes hourly.",
+                        style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = state.autoEnabled, onCheckedChange = onAutoEnabled)
             }
@@ -280,11 +281,14 @@ private fun Messages(state: YouTubeUiState) {
     state.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
 }
 
-private fun YouTubeTrack.toPageSong(saved: Boolean, saving: Boolean, art: String? = null) = PageSong(
+private fun YouTubeTrack.toPageSong(saved: Boolean, saving: Boolean, art: String? = null, failed: Boolean = false) = PageSong(
     id = id,
     title = title,
     details = songDetails(artist, durationSeconds),
     artworkUrl = art ?: youTubeArtworkUrl(id),
     saved = saved,
     saving = saving && !saved,
+    artist = artist,
+    durationSeconds = durationSeconds,
+    failed = failed,
 )

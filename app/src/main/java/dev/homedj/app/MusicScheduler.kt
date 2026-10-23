@@ -8,7 +8,6 @@ import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ShuffleOrder
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
@@ -31,7 +30,7 @@ import kotlinx.coroutines.launch
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 internal class MusicScheduler(
     private val app: Context,
-    private val player: ExoPlayer,
+    private val player: PlaybackPlayer,
     private val scope: CoroutineScope,
     private val breaks: MusicBreaks,
 ) : Player.Listener {
@@ -48,7 +47,7 @@ internal class MusicScheduler(
         return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
             .setAvailableSessionCommands(
                 MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
-                    .add(TICK).add(RESUME).add(PLAY_NEXT).build()
+                    .add(TICK).add(RESUME).add(PLAY_NEXT).add(PLAY_SCENE).build()
             ).build()
     }
 
@@ -59,6 +58,7 @@ internal class MusicScheduler(
                 TICK.customAction -> safely(ScheduleTrigger.BOUNDARY)
                 RESUME.customAction -> safely(ScheduleTrigger.RESUME)
                 PLAY_NEXT.customAction -> playNext(args)
+                PLAY_SCENE.customAction -> playScene(args)
                 else -> failure(SessionError.ERROR_NOT_SUPPORTED, "Unknown command")
             })
         }.invokeOnCompletion {
@@ -97,7 +97,7 @@ internal class MusicScheduler(
         val slots = ScheduleStore.shared(app).read()
         val now = ZonedDateTime.now()
         val active = SchedulePolicy.active(slots, now)
-        val tracks = active?.let { tracksFor(it.first) }.orEmpty()
+        val tracks = active?.let { tracksFor(it.first.playlistIds) }.orEmpty()
         ScheduleAlarms.arm(app, SchedulePolicy.nextBoundary(slots, now))
         // Everything below is synchronous on the player thread, so no other queue change interleaves.
         val queue = queueState()
@@ -130,6 +130,33 @@ internal class MusicScheduler(
             ScheduleAction.NoSlot -> failure(SessionError.ERROR_INVALID_STATE, "No schedule slot right now")
             ScheduleAction.Busy -> failure(SessionError.ERROR_INVALID_STATE, "OnePlus is casting live audio")
         }
+    }
+
+    /**
+     * A light scene's linked playlists, shuffled, replacing whatever plays (a person's queue too).
+     * Applying the same scene again while its queue is unfinished only resumes it. Never ends a live cast.
+     */
+    private suspend fun playScene(args: Bundle): SessionResult {
+        if (ModeStore(app).mode.first() != HomeDjMode.SERVER) return failure(SessionError.ERROR_INVALID_STATE, "Server role inactive")
+        val ids = args.getStringArrayList(ARG_PLAYLISTS).orEmpty()
+        if (!LightExperience.validPlaylists(ids)) return failure(SessionError.ERROR_BAD_VALUE, "Invalid playlist")
+        val tracks = tracksFor(ids)
+        // Re-checked after the catalog read; nothing below suspends.
+        if (LiveAudioSink.active) return failure(SessionError.ERROR_INVALID_STATE, "OnePlus is casting live audio")
+        if (tracks.isEmpty()) return failure(SessionError.ERROR_INVALID_STATE, "No cached songs. Open its playlists in Library.")
+        if (args.getBoolean(ARG_IF_IDLE) && queueState().playing) return failure(SessionError.ERROR_INVALID_STATE, "music is already playing")
+        val key = args.getString(ARG_SCENE).orEmpty() + ":" + ids.joinToString(",")
+        if (player.mediaItemCount > 0 && player.playbackState != Player.STATE_ENDED &&
+            player.getMediaItemAt(0).mediaMetadata.extras?.getString(SCENE_KEY) == key) {
+            player.play()
+        } else {
+            breaks.restart()
+            player.shuffleModeEnabled = true
+            player.setMediaItems(tracks.map { youTubeMediaItem(it, Bundle().apply { putString(SCENE_KEY, key) }) })
+            player.prepare()
+            player.play()
+        }
+        return SessionResult(SessionResult.RESULT_SUCCESS, Bundle().apply { putInt(ARG_SONGS, tracks.size) })
     }
 
     /** Puts one Library song right after the current one, also in shuffled play order. */
@@ -175,12 +202,12 @@ internal class MusicScheduler(
         ended = player.playbackState == Player.STATE_ENDED,
     )
 
-    private suspend fun tracksFor(slot: ScheduleSlot): List<YouTubeTrack> {
+    private suspend fun tracksFor(playlistIds: List<String>): List<YouTubeTrack> {
         val catalog = SavedPlaylistStore.shared(app).read()
-        return slot.playlistIds.flatMap { catalog.tracks[it].orEmpty() }
+        return playlistIds.flatMap { catalog.tracks[it].orEmpty() }
             .filter { NativeAudioSource.validId(it.id) }
             .distinctBy(YouTubeTrack::id)
-            .take(MAX_TRACKS)
+            .take(MAX_PLAYLIST_SONGS)
     }
 
     private fun setVolume(percent: Int) {
@@ -197,10 +224,15 @@ internal class MusicScheduler(
         const val ARG_ID = "id"
         const val ARG_TITLE = "title"
         const val ARG_ARTIST = "artist"
-        private const val MAX_TRACKS = 500
+        const val SCENE_KEY = "homedj_scene"
+        const val ARG_SCENE = "scene"
+        const val ARG_PLAYLISTS = "playlists"
+        const val ARG_SONGS = "songs"
+        const val ARG_IF_IDLE = "ifIdle"
         val TICK = SessionCommand("dev.homedj.app.SCHEDULE_TICK", Bundle.EMPTY)
         val RESUME = SessionCommand("dev.homedj.app.SCHEDULE_RESUME", Bundle.EMPTY)
         val PLAY_NEXT = SessionCommand("dev.homedj.app.PLAY_NEXT", Bundle.EMPTY)
+        val PLAY_SCENE = SessionCommand("dev.homedj.app.PLAY_SCENE", Bundle.EMPTY)
 
         private fun queueSlotKey(player: Player): String? =
             if (player.mediaItemCount == 0) null

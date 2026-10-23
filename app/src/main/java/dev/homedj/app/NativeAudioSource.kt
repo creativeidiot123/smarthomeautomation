@@ -19,12 +19,25 @@ import org.schabi.newpipe.extractor.exceptions.ExtractionException
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.exceptions.SignInConfirmNotBotException
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import org.schabi.newpipe.extractor.stream.StreamType
 
-/** YouTube refuses this track (private, restricted, DRM-only, bot check); retrying soon will not help. */
-internal class TrackUnavailableException(message: String) : IOException(message)
+/** YouTube refuses this track (private, restricted, DRM-only, bot check); playback skips it. */
+internal open class TrackUnavailableException(message: String) : IOException(message)
+
+/**
+ * YouTube's "confirm you're not a bot" or reCAPTCHA: a rate limit on this phone's address, not
+ * the song. Playback and the current download run skip it; an explicit save can try again later.
+ */
+internal class BotCheckException(message: String) : TrackUnavailableException(message)
+
+/** One regular-YouTube video search result: enough to judge whether it is the same song. */
+internal data class SearchHit(val id: String, val title: String, val uploader: String, val durationSeconds: Int)
 
 /** A public playlist read by link: its metadata and the songs that have valid video IDs. */
 internal data class LinkedPlaylist(val playlist: YouTubePlaylist, val tracks: List<YouTubeTrack>)
@@ -91,7 +104,16 @@ internal object NativeAudioSource {
 
     /** Without a PoToken provider, ANDROID-client links can be cut off mid-song; visionOS links need none. */
     internal fun preferredStream(candidates: List<Pair<String, Int>>): Pair<String, Int>? =
-        candidates.maxWithOrNull(compareBy({ YoutubeParsingHelper.isVisionOsStreamingUrl(it.first) }, { it.second }))
+        rankedStreams(candidates).firstOrNull()
+
+    /** Best first; downloads fall back down this list when a stream fails, playback takes the first. */
+    internal fun rankedStreams(candidates: List<Pair<String, Int>>): List<Pair<String, Int>> =
+        candidates.distinctBy { it.first }.sortedWith(
+            compareByDescending<Pair<String, Int>> { YoutubeParsingHelper.isVisionOsStreamingUrl(it.first) }
+                .thenByDescending { it.second })
+
+    /** A download tries at most this many of the offered streams per extraction. */
+    internal const val MAX_FALLBACK_STREAMS = 3
 
     @Volatile private var initialized = false
 
@@ -150,10 +172,15 @@ internal object NativeAudioSource {
         }
     }
 
-    suspend fun resolve(id: String): Link = withContext(Dispatchers.IO) { resolveBlocking(id) }
+    /** The best stream first, then up to [MAX_FALLBACK_STREAMS] in all for a download to fall back to. */
+    suspend fun resolveAll(id: String): List<Link> = withContext(Dispatchers.IO) {
+        resolveRanked(id).take(MAX_FALLBACK_STREAMS)
+    }
 
     /** Media3's ResolvingDataSource invokes this on its background loader thread. */
-    internal fun resolveBlocking(id: String): Link {
+    internal fun resolveBlocking(id: String): Link = resolveRanked(id).first()
+
+    private fun resolveRanked(id: String): List<Link> {
         require(validId(id)) { "Invalid YouTube video ID" }
         initialize()
         val info = try {
@@ -163,9 +190,9 @@ internal object NativeAudioSource {
         } catch (refused: ContentNotSupportedException) {
             throw TrackUnavailableException(refused.javaClass.simpleName)
         } catch (refused: SignInConfirmNotBotException) {
-            throw TrackUnavailableException(refused.javaClass.simpleName)
+            throw BotCheckException(refused.javaClass.simpleName)
         } catch (refused: ReCaptchaException) {
-            throw TrackUnavailableException(refused.javaClass.simpleName)
+            throw BotCheckException(refused.javaClass.simpleName)
         } catch (failure: ExtractionException) {
             throw IOException("Extraction failed: " + failure.javaClass.simpleName)
         }
@@ -174,10 +201,12 @@ internal object NativeAudioSource {
                 acceptedCdnUrl(it.content) &&
                 it.format?.suffix in setOf("m4a", "webm", "opus")
         }
-        val preferred = preferredStream(candidates.map { it.content to it.averageBitrate })
-            ?: throw TrackUnavailableException("No unprotected, directly downloadable audio stream available")
-        val chosen = candidates.first { it.content == preferred.first }
-        return Link(chosen.content, chosen.format?.suffix ?: "m4a", chosen.itag)
+        val ranked = rankedStreams(candidates.map { it.content to it.averageBitrate })
+        if (ranked.isEmpty()) throw TrackUnavailableException("No unprotected, directly downloadable audio stream available")
+        return ranked.map { (url, _) ->
+            val chosen = candidates.first { it.content == url }
+            Link(chosen.content, chosen.format?.suffix ?: "m4a", chosen.itag)
+        }
     }
 
     /**
@@ -213,6 +242,28 @@ internal object NativeAudioSource {
         }
     }
 
-    private const val MAX_LINKED_TRACKS = 500
-    private const val MAX_LINKED_PAGES = 8
+    /** Regular YouTube video results (no Shorts or live streams) for [query], in YouTube's order. */
+    suspend fun searchVideos(query: String): List<SearchHit> = withContext(Dispatchers.IO) {
+        initialize()
+        val items = try {
+            val handler = ServiceList.YouTube.searchQHFactory
+                .fromQuery(query.take(200), listOf(YoutubeSearchQueryHandlerFactory.VIDEOS), "")
+            SearchInfo.getInfo(ServiceList.YouTube, handler).relatedItems
+        } catch (refused: ReCaptchaException) {
+            throw BotCheckException(refused.javaClass.simpleName)
+        } catch (failure: ExtractionException) {
+            throw IOException("Search failed: " + failure.javaClass.simpleName)
+        }
+        items.filterIsInstance<StreamInfoItem>()
+            .filter { it.streamType == StreamType.VIDEO_STREAM && !it.isShortFormContent }
+            .mapNotNull { item ->
+                val id = idFromWatchUrl(item.url ?: "") ?: return@mapNotNull null
+                SearchHit(id, (item.name ?: "").take(300), item.uploaderName.orEmpty().take(200),
+                    item.duration.coerceIn(0L, MAX_TRACK_SECONDS.toLong()).toInt())
+            }
+    }
+
+    private const val MAX_LINKED_TRACKS = MAX_PLAYLIST_SONGS
+    // YouTube sends 100 songs a page; spare pages cover pages thinned by unavailable songs.
+    private const val MAX_LINKED_PAGES = 25
 }

@@ -19,15 +19,20 @@ import org.json.JSONObject
  * The pairing secret is entered out of band, never sent over the network.
  */
 internal object RemoteChannel {
-    private const val PORT = 47188
-    private const val MAX_FRAME = 65_536
+    const val PORT = 47188
+    /** Was 65,536: older builds still reject frames above that, so only a near-maximum lights reply needs both updated. */
+    private const val MAX_FRAME = 131_072
+    /** Live PCM keeps the old bound; packets are a few KB. */
+    private const val MAX_AUDIO_FRAME = 65_536
+    /** A fixed small send buffer stops autotuning from queueing seconds of stale PCM on slow Wi-Fi. */
+    private const val AUDIO_SEND_BUFFER = 16 * 1024
     private val random = SecureRandom()
 
-    fun generateKey(): String = ByteArray(32).also(random::nextBytes).let {
-        Base64.getUrlEncoder().withoutPadding().encodeToString(it)
-    }
+    fun generateKey(): String = RemotePairingCode.generate()
 
     fun decodeKey(encoded: String): SecretKeySpec? {
+        if (encoded.length > 128) return null
+        RemotePairingCode.decode(encoded)?.let { return it }
         val decoded = runCatching { Base64.getUrlDecoder().decode(encoded.trim()) }.getOrNull()
         return decoded?.takeIf { it.size == 32 }?.let { SecretKeySpec(it, "AES") }
     }
@@ -69,6 +74,7 @@ internal object RemoteChannel {
     fun streamAudio(host: String, key: SecretKeySpec, onSocket: (Socket) -> Unit, next: () -> ByteArray?) {
         Socket().use { socket ->
             onSocket(socket)
+            socket.sendBufferSize = AUDIO_SEND_BUFFER
             socket.connect(InetSocketAddress(host, PORT), 3_000)
             socket.tcpNoDelay = true
             socket.soTimeout = 5_000
@@ -100,7 +106,7 @@ internal object RemoteChannel {
     internal fun receiveAudio(
         input: DataInputStream, key: SecretKeySpec, challenge: ByteArray, sequence: Long,
     ): ByteArray {
-        val data = receiveBytes(input, key, audioAad(challenge, sequence))
+        val data = receiveBytes(input, key, audioAad(challenge, sequence), MAX_AUDIO_FRAME)
         if (!LiveAudioFormat.validPacket(data.size)) throw IOException("Invalid PCM packet")
         return data
     }
@@ -133,9 +139,9 @@ internal object RemoteChannel {
     internal fun receive(input: DataInputStream, key: SecretKeySpec, challenge: ByteArray): JSONObject =
         JSONObject(String(receiveBytes(input, key, challenge), Charsets.UTF_8))
 
-    private fun receiveBytes(input: DataInputStream, key: SecretKeySpec, challenge: ByteArray): ByteArray {
+    private fun receiveBytes(input: DataInputStream, key: SecretKeySpec, challenge: ByteArray, max: Int = MAX_FRAME): ByteArray {
         val size = input.readInt()
-        require(size in 29..MAX_FRAME) { "Invalid remote message size" }
+        require(size in 29..max) { "Invalid remote message size" }
         val nonce = ByteArray(12).also { input.readFully(it) }
         val ciphertext = ByteArray(size - 12).also { input.readFully(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")

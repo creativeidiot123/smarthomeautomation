@@ -19,10 +19,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
@@ -40,7 +42,12 @@ class HomeDjActivity : ComponentActivity() {
     private val playback: ServerPlaybackViewModel by viewModels()
     private val youtube: YouTubeViewModel by viewModels()
     private val remote: RemoteControllerViewModel by viewModels()
+    private val pairing: RemotePairingViewModel by viewModels()
     private val schedule: ScheduleViewModel by viewModels()
+    private val playlistSort: PlaylistSortViewModel by viewModels()
+    private val presence: PresenceViewModel by viewModels()
+    private val lights: LightsViewModel by viewModels()
+    private val houseRules: HouseRulesViewModel by viewModels()
     private var authorizationPending = false
     private var revokePending = false
     private val scopes = listOf(Scope(YOUTUBE_SCOPE))
@@ -72,8 +79,9 @@ class HomeDjActivity : ComponentActivity() {
 
     // Notification access is optional; without it Android 13+ hides the cast's Stop action.
     private val castPermission =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
-            if (results[Manifest.permission.RECORD_AUDIO] == true) requestCastConsent()
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            // The result may contain only notifications when audio was already granted.
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) requestCastConsent()
             else downloadMessage("Audio capture permission is required to cast permitted app playback.")
         }
 
@@ -91,6 +99,44 @@ class HomeDjActivity : ComponentActivity() {
                 }
             }
         }
+
+    // OnePlus: foreground permissions, then "Allow all the time". Samsung: Bluetooth only.
+    private val presencePermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            presence.refresh()
+            enablePresence(askedBackground = Manifest.permission.ACCESS_BACKGROUND_LOCATION in results)
+        }
+
+    /** Denied permissions leave their signal off; detection still runs on the rest. */
+    private fun enablePresence(askedBackground: Boolean? = null) {
+        if (roleModel.state.value.mode != HomeDjMode.CONTROLLER) return
+        val granted = { permission: String -> checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED }
+        val missing = presenceControllerPermissions().filterNot(granted)
+        val background = Manifest.permission.ACCESS_BACKGROUND_LOCATION
+        when {
+            askedBackground == null && missing.isNotEmpty() -> presencePermissions.launch(missing.toTypedArray())
+            askedBackground != true && granted(Manifest.permission.ACCESS_FINE_LOCATION) && !granted(background) ->
+                presencePermissions.launch(arrayOf(background))
+            else -> presence.setEnabled(true)
+        }
+    }
+
+    private fun openAppSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        } catch (missing: ActivityNotFoundException) {
+            downloadMessage("Open Settings > Apps > HomeDJ.")
+        }
+    }
+
+    /** Samsung new-bulb setup; the ViewModel re-reads the grant and decides at pairing time. */
+    private val lightBluetoothRequest =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { lights.bluetoothRequested() }
+
+    private fun allowLightBluetooth() {
+        if (roleModel.state.value.mode != HomeDjMode.SERVER) return
+        lightBluetoothRequest.launch(lightBluetoothPermissions(Build.VERSION.SDK_INT).toTypedArray())
+    }
 
     private val exactAlarmSettings =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { schedule.refreshPermission() }
@@ -275,8 +321,11 @@ class HomeDjActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureMusicImageLoader()
         setContent {
             val role by roleModel.state.collectAsStateWithLifecycle()
+            val pairingState by pairing.state.collectAsStateWithLifecycle()
+            val sortState by playlistSort.state.collectAsStateWithLifecycle()
             HomeDjTheme {
                 when {
                     !role.loaded -> RoleLoadingScreen(role.error)
@@ -305,14 +354,27 @@ class HomeDjActivity : ComponentActivity() {
                         val remoteRunning by RemoteServerService.running.collectAsStateWithLifecycle()
                         val activity by RemoteActivity.entries.collectAsStateWithLifecycle()
                         val remoteAddress = remember(remoteRunning) { RemotePrefs.localAddress(this@HomeDjActivity) }
-                        val pairingCode = remember { RemotePrefs(this@HomeDjActivity).serverKey() }
+                        LifecycleResumeEffect(presence) {
+                            presence.refresh()
+                            onPauseOrDispose {}
+                        }
+                        val presenceState by presence.state.collectAsStateWithLifecycle()
+                        val nextBreak by MusicBreaks.nextBreak.collectAsStateWithLifecycle()
+                        val onePlusSeen by RemoteServerService.onePlus.collectAsStateWithLifecycle()
                         ServerScreen(
+                            sortState = sortState,
+                            onSort = playlistSort::select,
                             status = status,
                             youtubeState = youtubeState,
                             remoteRunning = remoteRunning,
                             remoteAddress = remoteAddress,
-                            remotePairingCode = pairingCode,
+                            remotePairing = pairingState,
+                            onReplacePairingCode = pairing::replaceServerCode,
                             onRemoteToggle = ::setRemoteEnabled,
+                            batteryUnrestricted = presenceState.batteryUnrestricted,
+                            onBackgroundAccess = {
+                                if (roleModel.state.value.mode == HomeDjMode.SERVER) openServerBackgroundAccess()
+                            },
                             changing = role.changing,
                             onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
                             onPlaySharedDownloads = ::requestDownloadedAudio,
@@ -332,6 +394,7 @@ class HomeDjActivity : ComponentActivity() {
                             },
                             onDownloadTrack = youtube::saveTrackOffline,
                             onDownloadSelected = youtube::saveSelectedOffline,
+                            onRefreshSelected = youtube::refreshSelectedPlaylist,
                             onCancelSaves = youtube::cancelSaves,
                             onRemoveDownloads = youtube::removeDownloads,
                             onAutoEnabled = youtube::setAutoEnabled,
@@ -349,6 +412,16 @@ class HomeDjActivity : ComponentActivity() {
                             breakResumesAt = breakResumesAt,
                             onBreaks = playback::setBreaks,
                             activity = activity,
+                            presenceCard = {
+                                if (remoteRunning && !presenceState.nearbyGranted) PresenceNearbyCard(onAllow = {
+                                    presencePermissions.launch(presenceNearbyPermissions().toTypedArray())
+                                })
+                            },
+                            lightsPage = { LightsPage(remember(youtubeState.playlists) { youtubeState.playlists.associate { it.id to it.title } }) },
+                            dashboard = {
+                                LiveDashboard({ now, wallNow -> serverDashboard(status, breakSettings,
+                                    breakResumesAt, nextBreak, remoteRunning, onePlusSeen, now, wallNow) })
+                            },
                         )
                     }
                     role.mode == HomeDjMode.CONTROLLER -> {
@@ -360,26 +433,56 @@ class HomeDjActivity : ComponentActivity() {
                         }
                         val remoteState by remote.state.collectAsStateWithLifecycle()
                         val castState by LiveAudioCastService.state.collectAsStateWithLifecycle()
+                        LifecycleResumeEffect(presence) {
+                            presence.refresh()
+                            onPauseOrDispose {}
+                        }
+                        val presenceState by presence.state.collectAsStateWithLifecycle()
                         RemoteControllerScreen(
+                            sortState = sortState,
+                            onSort = playlistSort::select,
                             changing = role.changing,
                             state = remoteState,
                             castState = castState,
                             onStartCast = ::requestCast,
                             onStopCast = { LiveAudioCastService.stop(this@HomeDjActivity) },
-                            onConnect = remote::connect,
+                            pairing = pairingState,
+                            onPairHost = pairing::editHost,
+                            onPairPort = pairing::editPort,
+                            onPairCode = pairing::editCode,
+                            onScanPairing = { scanRemotePairingQr(this@HomeDjActivity, pairing) },
+                            onConnect = { pairing.connect(remote::connect) },
                             onCommand = remote::command,
                             onSeek = remote::seek,
                             onDownloadChange = remote::changeDownload,
                             onBrowsePlaylists = remote::browsePlaylists,
                             onBrowseDownloads = remote::browseDownloads,
                             onBrowseTracks = remote::browseTracks,
-                            onLoadMore = remote::loadMore,
+                            onRetryBrowse = remote::retryBrowse,
                             onLibraryAction = remote::libraryAction,
                             onImportLink = remote::importPlaylistLink,
+                            onRefreshPlaylist = remote::refreshPlaylist,
                             onBreaks = remote::setBreaks,
                             onSwitch = {
                                 LiveAudioCastService.stop(this@HomeDjActivity)
                                 roleModel.select(HomeDjMode.SERVER)
+                            },
+                            presenceCard = {
+                                PresenceCard(
+                                    state = presenceState,
+                                    onEnabled = { if (it) enablePresence() else presence.setEnabled(false) },
+                                    onSetHome = presence::setHomeHere,
+                                    onOpenAppSettings = ::openAppSettings,
+                                )
+                                val lightsState by lights.state.collectAsStateWithLifecycle()
+                                HomeArrivalCard(lightsState,
+                                    remember(remoteState.playlists) { remoteState.playlists.associate { it.id to it.title } },
+                                    presenceState.autoPause, presence::setAutoPause, lights::setPresence, lights::refresh)
+                            },
+                            lightsPage = { LightsPage(remember(remoteState.playlists) { remoteState.playlists.associate { it.id to it.title } }) },
+                            dashboard = {
+                                LiveDashboard({ now, wallNow ->
+                                    controllerDashboard(remoteState, presenceState, now, wallNow) })
                             },
                         )
                     }
@@ -390,6 +493,44 @@ class HomeDjActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * The Lights tab on either phone; Samsung-only actions are hidden on the OnePlus. [playlists]
+     * (ID to title) are Samsung's saved playlists a scene can link: its Library, or on the OnePlus the list Samsung sent.
+     */
+    @Composable
+    private fun LightsPage(playlists: Map<String, String>) {
+        val state by lights.state.collectAsStateWithLifecycle()
+        val actions = remember {
+            LightsActions(lights::refresh, lights::pair, lights::change, lights::rename, lights::forget,
+                ::requestExactAlarms,
+                ::scanLightQr, lights::clearScan, lights::discover, lights::saveGroup, lights::deleteGroup,
+                lights::changeGroup, lights::preferences, lights::saveLightRule, lights::removeLightRule,
+                lights::enableLightRule, lights::runLightRule, lights::saveScene, lights::deleteScene,
+                lights::applyScene, lights::saveLocation, lights::readLight, lights::variation, lights::groupVariation, ::allowLightBluetooth, lights::wifiPassword,
+                lights::previewScene, lights::endScenePreview, lights::dance, lights::permanentlyOff)
+        }
+        val rules by houseRules.state.collectAsStateWithLifecycle()
+        val rulesActions = remember { HouseRulesActions(houseRules::refresh, houseRules::save) }
+        LightsSection(state, actions, rules, rulesActions, playlists)
+    }
+
+    /** Play services owns the camera UI. Codes remain in memory and pairing still needs a tap. */
+    private fun scanLightQr() {
+        val model = lights
+        if (!model.beginScan()) return
+        val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom().build()
+        try {
+            com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(this, options).startScan()
+                .addOnSuccessListener { model.scanned(it.rawValue) }
+                .addOnCanceledListener { model.cancelScan() }
+                .addOnFailureListener { model.scannerFailed(it) }
+        } catch (failure: Exception) {
+            model.scannerFailed(failure)
         }
     }
 

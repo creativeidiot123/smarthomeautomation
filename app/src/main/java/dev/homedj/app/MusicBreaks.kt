@@ -69,6 +69,12 @@ data class MusicBreakSettings(
     }
 }
 
+/**
+ * Music left before the next break, a projection of MusicBreaks: [millis] from [at]
+ * (`elapsedRealtime`), counting down only while [counting]. Zero means after the current song.
+ */
+internal data class NextBreak(val millis: Long, val at: Long, val counting: Boolean)
+
 /** Picks each music session, silence and fade length; [random] is injectable for tests. */
 internal object MusicBreakPolicy {
     fun musicMillis(settings: MusicBreakSettings, random: Random): Long =
@@ -88,12 +94,15 @@ internal object MusicBreakPolicy {
     fun secondsLeft(resumeAt: Long?, now: Long): Long =
         if (resumeAt == null) 0 else ((resumeAt - now + 999) / 1_000).coerceAtLeast(1)
 
+    /** Whole seconds of music before the next break at [now]; 0 means once the current song ends. */
+    fun secondsUntilBreak(next: NextBreak, now: Long): Long {
+        val left = if (next.counting) next.millis - (now - next.at) else next.millis
+        return (left.coerceAtLeast(0) + 999) / 1_000
+    }
+
     /** A queue tagged with a schedule slot instance resumes only while that same instance is active. */
     fun mayResume(queueSlotKey: String?, activeSlotKey: String?): Boolean =
         queueSlotKey == null || queueSlotKey == activeSlotKey
-
-    /** Squared gain sounds smoother than a linear ramp; [progress] runs 0 (silent) to 1 (full). */
-    fun gain(progress: Float): Float = progress.coerceIn(0f, 1f).let { it * it }
 
     private fun minutes(min: Int, max: Int, random: Random): Long =
         random.nextLong(min * 60_000L, max * 60_000L + 1)

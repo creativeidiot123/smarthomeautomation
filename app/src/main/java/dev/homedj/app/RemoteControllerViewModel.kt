@@ -33,6 +33,7 @@ data class RemoteSong(
     val saving: Boolean = false,
     val artist: String = "",
     val durationSeconds: Int = 0,
+    val failed: Boolean = false,
 )
 
 data class RemoteUiState(
@@ -50,20 +51,27 @@ data class RemoteUiState(
     val breaks: MusicBreakSettings? = null,
     /** Wall-clock time a running break ends, for display only. */
     val breakResumesAt: Long? = null,
+    /** Samsung's music left before its next break at [positionAt]; null when unknown or from an older build. */
+    val nextBreakSeconds: Long? = null,
     val error: String? = null,
     val notice: String? = null,
     val browserMode: String = "catalog",
     val browserLoading: Boolean = false,
+    val browserCached: Boolean = false,
     val selectedPlaylistId: String? = null,
     val selectedPlaylistTitle: String = "",
     val playlists: List<RemotePlaylist> = emptyList(),
     val songs: List<RemoteSong> = emptyList(),
     val browserTotal: Int = 0,
     val importingLink: Boolean = false,
+    val refreshingPlaylist: Boolean = false,
     /** Samsung's recent changes from either phone, newest first; null on a Samsung build without it. */
     val activity: List<ActivityEntry>? = null,
     /** Samsung's catalog revision; a change re-reads the playlist list. Null on older builds. */
     val libraryRevision: Long? = null,
+    val downloadsRevision: Long? = null,
+    /** Download revision actually reflected in [songs], independent of newer status replies. */
+    val songsDownloadsRevision: Long? = null,
     /** Index of the song shown, sent with skips so a stale tap cannot skip twice; -1 if unknown. */
     val trackIndex: Int = -1,
     val artist: String = "",
@@ -86,6 +94,8 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     private var connection: Job? = null
     private var generation = 0
     private var browseVersion = 0
+    private var browseJob: Job? = null
+    private val browseCache = RemoteBrowseCache(application.filesDir)
     private var started = false
     private var networkRegistered = false
     // Wakes the poll loop early (Wi-Fi back, a failed command) without restarting it.
@@ -116,24 +126,30 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     }
 
     fun connect(host: String, code: String) {
-        connection?.cancel()
-        val version = ++generation
-        browseVersion++
         val address = host.trim()
+        val normalizedCode = RemotePairingCode.normalize(code)
         val key = RemoteChannel.decodeKey(code)
         if (!RemotePrefs.validPrivateIpv4(address) || key == null) {
-            mutableState.value = mutableState.value.copy(
-                connected = false, error = "Enter the server's private Wi-Fi IPv4 and pairing code."
-            )
+            mutableState.update { it.copy(error = "Enter the server's private Wi-Fi IPv4 and pairing code.") }
             return
         }
+        connection?.cancel()
+        browseJob?.cancel()
+        val version = ++generation
+        browseVersion++
         val previous = mutableState.value
-        val samePeer = previous.host == address && previous.pairingCode == code.trim()
+        val samePeer = previous.host == address && previous.pairingCode == normalizedCode
         mutableState.value = if (samePeer) {
             previous.copy(connected = false, browserLoading = false, error = null)
-        } else RemoteUiState(host = address, pairingCode = code.trim())
+        } else RemoteUiState(host = address, pairingCode = normalizedCode)
         connection = viewModelScope.launch {
+            val cached = browseCache.read(browsePeerKey(address, normalizedCode), null, "catalog", null)
+            if (version != generation) return@launch
+            if (mutableState.value.playlists.isEmpty() && cached != null) {
+                mutableState.update { cached.show(it, "catalog", false).copy(browserCached = true) }
+            }
             var failures = 0
+            var libraryChecked = false
             while (isActive && version == generation) {
                 refresh.tryReceive() // This poll answers any refresh requested before it.
                 try {
@@ -142,15 +158,16 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                     if (version != generation) break
                     val firstConnection = !mutableState.value.connected
                     failures = 0
-                    if (prefs.savedHost != address || prefs.savedClientKey != code.trim()) {
-                        prefs.saveClient(address, code)
+                    if (prefs.savedHost != address || prefs.savedClientKey != normalizedCode) {
+                        prefs.saveClient(address, normalizedCode)
                     }
                     show(response)
                     val currentBrowse = mutableState.value
-                    if (firstConnection && currentBrowse.needsBrowse()) {
+                    if (firstConnection && !currentBrowse.browserLoading && (currentBrowse.needsBrowse() || !libraryChecked)) {
                         browse(currentBrowse.browserMode, currentBrowse.selectedPlaylistId)
                     }
-                    refreshSavingSongs(address, key)
+                    libraryChecked = true
+                    refreshSongs(address, key)
                 } catch (failure: CancellationException) {
                     throw failure
                 } catch (failure: Exception) {
@@ -160,6 +177,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                         failure.javaClass.simpleName + " consecutive=" + failures.coerceAtMost(6))
                     if (showsDisconnected(failures, mutableState.value.connected)) {
                         browseVersion++
+                        browseJob?.cancel()
                         mutableState.value = mutableState.value.copy(
                             connected = false, browserLoading = false,
                             error = "Server unavailable or pairing code incorrect."
@@ -208,17 +226,15 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
     fun browseDownloads() = browse("downloads")
     fun browseTracks(id: String) = browse("tracks", id)
 
-    fun loadMore() {
+    fun retryBrowse() {
         val current = mutableState.value
-        if (current.browserLoading || !current.connected) return
-        val loaded = if (current.browserMode == "catalog") current.playlists.size else current.songs.size
-        if (loaded < current.browserTotal) browse(current.browserMode, current.selectedPlaylistId, loaded)
+        if (!current.browserLoading) browse(current.browserMode, current.selectedPlaylistId, force = true)
     }
 
-    private fun browse(mode: String, id: String? = null, offset: Int = 0) {
+    private fun browse(mode: String, id: String? = null, force: Boolean = false) {
         val current = mutableState.value
         val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
-        if (!current.connected) return
+        browseJob?.cancel()
         val requestVersion = ++browseVersion
         val connectionVersion = generation
         val selectedTitle = if (mode == "tracks")
@@ -227,43 +243,30 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         mutableState.value = current.copy(
             browserMode = mode, selectedPlaylistId = if (mode == "tracks") id else null,
             selectedPlaylistTitle = selectedTitle, browserLoading = true, error = null,
-            playlists = if (offset == 0 && mode == "catalog") emptyList() else current.playlists,
-            songs = if (offset == 0) emptyList() else current.songs,
-            browserTotal = if (offset == 0) 0 else current.browserTotal,
+            songs = emptyList(), browserTotal = 0, savedCount = -1, savingCount = 0, browserCached = false,
         )
-        viewModelScope.launch {
+        browseJob = viewModelScope.launch {
             try {
-                val response = exchange(current.host, key, mode, id = id, offset = offset)
+                val peer = browsePeerKey(current.host, current.pairingCode)
+                val cached = browseCache.read(peer, current.libraryRevision, mode, id)
                 if (connectionVersion != generation || requestVersion != browseVersion) return@launch
-                if (!response.optBoolean("ok")) {
-                    mutableState.value = mutableState.value.copy(
-                        browserLoading = false, error = response.optString("error", "Could not browse library")
-                    )
+                val reusable = !force && current.libraryRevision != null && cached?.reusable(mode, current.downloadsRevision) == true
+                if (cached != null) mutableState.update {
+                    cached.show(it, mode, current.connected && !reusable).copy(browserCached = !current.connected || !reusable)
+                }
+                if (!current.connected || reusable) {
+                    mutableState.update { it.copy(browserLoading = false) }
                     return@launch
                 }
-                val values = response.optJSONArray("items")
-                val playlists = mutableListOf<RemotePlaylist>()
-                val songs = mutableListOf<RemoteSong>()
-                if (values != null) for (index in 0 until values.length()) {
-                    val item = values.optJSONObject(index) ?: continue
-                    if (mode == "catalog") playlists.add(RemotePlaylist(
-                        item.optString("id"), item.optString("title"), item.optInt("count"),
-                        youTubeImageUrl(item.optString("art")).orEmpty(),
-                    ))
-                    else songs.add(remoteSong(item))
-                }
-                val previous = mutableState.value
-                mutableState.value = previous.copy(
-                    browserLoading = false, browserTotal = response.optInt("total", 0),
-                    savedCount = if (mode == "tracks") response.optInt("savedCount", -1) else -1,
-                    savingCount = if (mode == "tracks") response.optInt("savingCount", 0) else 0,
-                    playlists = if (mode == "catalog")
-                        (if (offset == 0) emptyList() else previous.playlists) + playlists
-                        else previous.playlists,
-                    songs = if (mode != "catalog")
-                        (if (offset == 0) emptyList() else previous.songs) + songs
-                        else previous.songs,
-                )
+                val page = loadRemoteBrowse(mode, fetch = { offset ->
+                    exchange(current.host, key, mode, id = id, offset = offset).also {
+                        if (connectionVersion != generation || requestVersion != browseVersion) throw CancellationException()
+                    }
+                }).copy(downloadsRevision = current.downloadsRevision)
+                mutableState.update { page.show(it, mode, false) }
+                browseCache.save(peer, current.libraryRevision, mode, id, page)
+                prefetchMusicArtwork(getApplication(), page.playlists.map { it.artworkUrl } +
+                    page.songs.mapNotNull { youTubeArtworkUrl(it.id) })
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Exception) {
@@ -305,6 +308,10 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                     error = if (response.optBoolean("ok")) null
                         else downloadChangeError(action, response.optString("error", "Command rejected")),
                 )
+                if (response.optBoolean("ok") && action in setOf("saveTrack", "savePlaylist", "cancelSave", "removeSaved")) {
+                    browseCache.invalidateDownloads()
+                    refresh.trySend(Unit)
+                }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Exception) {
@@ -346,7 +353,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
                         error = if (ok) null else importLinkError(response.optString("error")),
                     )
                 }
-                if (ok) browse("catalog")
+                if (ok) browse("catalog", force = true)
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Exception) {
@@ -360,33 +367,61 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         }
     }
 
-    /** Re-reads only the song rows Samsung is still saving, so each one turns "Saved" when it lands. */
-    private suspend fun refreshSavingSongs(host: String, key: SecretKeySpec) {
+    /** Samsung re-reads the playlist online, so like a link import the reply may take a while. */
+    fun refreshPlaylist(id: String) {
         val current = mutableState.value
-        val playlist = current.selectedPlaylistId
-        if (current.browserMode != "tracks" || current.browserLoading || playlist == null) return
-        val first = current.songs.indexOfFirst { it.saving }
-        if (first < 0) return
-        val last = current.songs.indexOfLast { it.saving }
-        val requestVersion = browseVersion
-        val fresh = HashMap<String, RemoteSong>()
-        var counts: Pair<Int, Int>? = null
-        var offset = first
-        while (offset <= last) {
-            val response = exchange(host, key, "tracks", id = playlist, offset = offset)
-            val items = response.optJSONArray("items")
-            if (!response.optBoolean("ok") || items == null || items.length() == 0) break
-            for (index in 0 until items.length()) {
-                items.optJSONObject(index)?.let(::remoteSong)?.let { fresh[it.id] = it }
+        val key = RemoteChannel.decodeKey(current.pairingCode) ?: return
+        if (!current.connected || current.refreshingPlaylist) return
+        val version = generation
+        mutableState.update { it.copy(refreshingPlaylist = true, notice = null, error = null) }
+        viewModelScope.launch {
+            try {
+                // Outside [mutex], like an import: status polls and other commands keep going.
+                val request = JSONObject().put("command", "refreshPlaylist").put("id", id)
+                val response = withContext(Dispatchers.IO) {
+                    RemoteChannel.exchange(current.host, key, request, replyTimeoutMillis = 45_000)
+                }
+                if (version != generation) return@launch
+                val ok = response.optBoolean("ok")
+                mutableState.update { it.copy(notice = if (ok) response.optString("message", "Playlist refreshed") else null,
+                    error = if (ok) null else refreshPlaylistError(response.optString("error"))) }
+                if (ok && mutableState.value.browserMode == "tracks" && mutableState.value.selectedPlaylistId == id)
+                    browse("tracks", id, force = true)
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                if (version != generation) return@launch
+                Log.w("HomeDJRemote", "Playlist refresh failed: " + failure.javaClass.simpleName)
+                // Unknown outcome: Samsung may still finish; reopening the playlist shows the truth.
+                mutableState.update { it.copy(error = "Samsung did not confirm. Reopen the playlist in a moment.") }
+            } finally {
+                mutableState.update { it.copy(refreshingPlaylist = false) }
             }
+        }
+    }
+
+    /** Re-reads the loaded rows [songsToRefresh] picks, so "Saving…" and "Downloaded" follow Samsung live. */
+    private suspend fun refreshSongs(host: String, key: SecretKeySpec) {
+        val current = mutableState.value
+        val rows = current.songsToRefresh() ?: return
+        val requestVersion = browseVersion
+        val fresh = mutableListOf<RemoteSong>()
+        var counts: Pair<Int, Int>? = null
+        var total = current.browserTotal
+        var offset = rows.first
+        while (offset <= rows.last || (current.browserMode == "downloads" && offset < total)) {
+            val response = exchange(host, key, current.browserMode, id = current.selectedPlaylistId, offset = offset)
+            val items = response.optJSONArray("items")
+            if (!response.optBoolean("ok") || items == null) return
             counts = response.optInt("savedCount", -1) to response.optInt("savingCount", 0)
+            total = response.optInt("total", total)
+            if (items.length() == 0) break
+            for (index in 0 until items.length()) items.optJSONObject(index)?.let { fresh.add(remoteSong(it)) }
             offset += items.length()
         }
-        if (requestVersion != browseVersion || fresh.isEmpty()) return
-        mutableState.update { state ->
-            state.copy(songs = state.songs.map { fresh[it.id] ?: it },
-                savedCount = counts?.first ?: state.savedCount, savingCount = counts?.second ?: state.savingCount)
-        }
+        if (requestVersion != browseVersion) return
+        mutableState.update { it.withFreshSongs(fresh, total, counts)
+            .copy(songsDownloadsRevision = current.downloadsRevision) }
     }
 
     private suspend fun exchange(
@@ -416,9 +451,11 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             breaks = response.optJSONObject("breaks")?.let(MusicBreakSettings::fromJson),
             breakResumesAt = response.optLong("breakSeconds", 0).takeIf { it > 0 }
                 ?.let { System.currentTimeMillis() + it * 1_000 },
+            nextBreakSeconds = if (response.has("nextBreakSeconds")) response.optLong("nextBreakSeconds") else null,
             error = if (mutableState.value.connected) mutableState.value.error else null,
             activity = RemoteActivity.fromJson(response.optJSONArray("activity"), System.currentTimeMillis()),
             libraryRevision = library,
+            downloadsRevision = if (response.has("downloads")) response.optLong("downloads") else null,
             trackIndex = response.optInt("index", -1),
             artist = response.optString("artist").take(200),
             positionMs = response.optLong("position", 0L).coerceAtLeast(0),
@@ -426,9 +463,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
             positionAt = SystemClock.elapsedRealtime(),
         )
         // A playlist added on either phone shows up here without a manual refresh.
-        if (libraryChanged(previous.libraryRevision, library) && previous.browserMode == "catalog" &&
-            !previous.browserLoading
-        ) browsePlaylists()
+        if (libraryChanged(previous.libraryRevision, library)) browse(previous.browserMode, previous.selectedPlaylistId)
     }
 
     fun stop() {
@@ -439,6 +474,7 @@ class RemoteControllerViewModel(application: Application) : AndroidViewModel(app
         }
         generation++
         browseVersion++
+        browseJob?.cancel()
         connection?.cancel()
         connection = null
         mutableState.value = mutableState.value.copy(connected = false, browserLoading = false)

@@ -13,6 +13,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
@@ -154,8 +155,9 @@ class LiveAudioCastService : Service() {
                     val active = AudioRecord.Builder()
                         .setAudioFormat(format)
                         .setAudioPlaybackCaptureConfig(config)
-                        // Half a second of capture survives a Wi-Fi stall without losing audio.
-                        .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 25))
+                        // At most 100 ms waits here while Wi-Fi is slow: older audio only delays a
+                        // live cast, and Samsung would drop it anyway.
+                        .setBufferSizeInBytes(maxOf(minimum, LiveAudioFormat.CHUNK_BYTES * 5))
                         .build()
                     synchronized(recorderLock) {
                         if (stopping) {
@@ -166,7 +168,7 @@ class LiveAudioCastService : Service() {
                     }
                     if (active.state != AudioRecord.STATE_INITIALIZED) throw IOException("Capture device unavailable")
                     active.startRecording()
-                    val frame = ByteArray(LiveAudioFormat.CHUNK_BYTES)
+                    val frame = ByteArray(LiveAudioFormat.SEND_BYTES)
                     var started = false
                     RemoteChannel.streamAudio(host, key, onSocket = castSocket::attach) {
                         sendStartedAt = 0L // The previous frame has been written.
@@ -176,6 +178,9 @@ class LiveAudioCastService : Service() {
                         if (!started) {
                             synchronized(recorderLock) {
                                 if (stopping) throw IOException("Audio casting stopped")
+                                // Mute once per accepted cast; later volume changes belong to the user.
+                                getSystemService(AudioManager::class.java)
+                                    .setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
                                 started = true
                                 state.value = CastState(active = true)
                             }

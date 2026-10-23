@@ -2,13 +2,11 @@ package dev.homedj.app
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ShuffleOrder
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
@@ -56,27 +54,33 @@ internal class MusicBreakStore(context: Context) {
 
 /**
  * Splits the service's playback into random music sessions and silences. Runs on the player's
- * main thread inside [PlaybackService]: it only fades, pauses and resumes the sole player and never
+ * main thread inside [PlaybackService]: it waits for song ends, pauses and resumes the session and never
  * touches the queue. Music time counts only while audio is actually playing. Every external
- * play/pause arrives through [UserCommandPlayer]: Play ends a break, Pause cancels its resume.
+ * play/pause arrives through [UserCommandPlayer]: Play ends a break, Pause cancels its resume. A skip
+ * or picked song keeps a break that is due after the current song; it then follows the new song.
  * [MusicScheduler] ends a break when a slot ends ([cancel]) or starts ([restart]); [canResume]
  * re-checks at resume time that the queue may still play (its slot is active, nothing is casting).
  */
+@androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
 internal class MusicBreaks(
     private val player: Player,
     private val scope: CoroutineScope,
-    private val wakeLock: PowerManager.WakeLock,
+    private val acquireWakeLock: (Long) -> Unit,
+    private val releaseWakeLock: () -> Unit,
     private val onHoldReleased: () -> Unit,
     private val canResume: suspend () -> Boolean,
+    private val pauseAtEnd: () -> Boolean,
+    private val setPauseAtEnd: (Boolean) -> Unit,
+    private val resumeWithFade: (Long) -> Unit,
     private val random: Random = Random.Default,
+    private val now: () -> Long = SystemClock::elapsedRealtime,
+    private val waitMillis: suspend (Long) -> Unit = { delay(it) },
 ) : Player.Listener {
     private var settings = MusicBreakSettings()
     private var musicLeft = 0L // Zero rolls a new music session on the next play.
     private var clockStarted = 0L
     private var clock: Job? = null
-    private var breakJob: Job? = null // Fade-out, silence, then resume.
-    private var fadeInJob: Job? = null
-    private var fadeInPending = false
+    private var breakJob: Job? = null // Silence, then resume.
 
     /** The player is paused by a break; the service stays foreground so it may resume. */
     var onBreak = false
@@ -87,33 +91,32 @@ internal class MusicBreaks(
         settings = next
         if (!next.enabled && wasEnabled) cancel()
         else if (next.enabled && !wasEnabled && player.isPlaying) startClock()
+        publish()
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
-        if (!isPlaying) {
-            stopClock()
-            return
-        }
-        startClock()
-        if (fadeInPending) {
-            fadeInPending = false
-            val millis = MusicBreakPolicy.fadeMillis(settings, random)
-            fadeInJob = scope.launch {
-                ramp(fadeIn = true, millis)
-                fadeInJob = null
-            }
-        }
+        if (isPlaying) startClock() else stopClock()
+        publish()
+    }
+
+    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM &&
+            pauseAtEnd() && settings.enabled && breakJob == null
+        ) startBreak()
+        publish()
     }
 
     fun onUserPlay() {
-        if (stopBreak()) musicLeft = 0
-        stopFadeIn()
+        // A Play while music already plays (after a picked song) keeps a break due after this song.
+        if ((breakJob != null || !player.playWhenReady) && stopBreak()) musicLeft = 0
+        if (player.isPlaying) startClock()
+        publish()
     }
 
     fun onUserPause() {
         val wasOnBreak = onBreak
         if (stopBreak()) musicLeft = 0
-        stopFadeIn()
+        publish()
         if (wasOnBreak) onHoldReleased()
     }
 
@@ -132,29 +135,30 @@ internal class MusicBreaks(
         stopClock()
         musicLeft = 0
         stopBreak()
-        stopFadeIn()
+        publish()
     }
 
     /** Service teardown; the player is released right after, so leave it alone. */
     fun release() {
         clock?.cancel()
         breakJob?.cancel()
-        fadeInJob?.cancel()
         onBreak = false
-        if (wakeLock.isHeld) wakeLock.release()
+        releaseWakeLock()
         mutableResumeAt.value = null
+        mutableNextBreak.value = null
     }
 
     private fun startClock() {
-        if (!settings.enabled || breakJob != null || clock != null) return
+        if (!settings.enabled || breakJob != null || clock != null || pauseAtEnd()) return
         if (musicLeft <= 0) musicLeft = MusicBreakPolicy.musicMillis(settings, random)
-        clockStarted = SystemClock.elapsedRealtime()
+        clockStarted = now()
         val left = musicLeft
         clock = scope.launch {
-            delay(left)
+            waitMillis(left)
             clock = null
             musicLeft = 0
-            startBreak()
+            setPauseAtEnd(true)
+            publish()
         }
     }
 
@@ -162,26 +166,26 @@ internal class MusicBreaks(
         val running = clock ?: return
         running.cancel()
         clock = null
-        musicLeft = (musicLeft - (SystemClock.elapsedRealtime() - clockStarted)).coerceAtLeast(0)
+        musicLeft = (musicLeft - (now() - clockStarted)).coerceAtLeast(0)
     }
 
     private fun startBreak() {
-        val fadeOut = MusicBreakPolicy.fadeMillis(settings, random)
         val silence = MusicBreakPolicy.silenceMillis(settings, random)
         breakJob = scope.launch {
-            ramp(fadeIn = false, fadeOut)
             onBreak = true // Before pause, so Media3's notification refresh keeps the service foreground.
-            wakeLock.acquire(silence + WAKE_MARGIN_MILLIS) // Keeps the timer on time with the screen off.
-            mutableResumeAt.value = SystemClock.elapsedRealtime() + silence
+            acquireWakeLock(silence + WAKE_MARGIN_MILLIS) // Keeps the timer on time with the screen off.
+            mutableResumeAt.value = now() + silence
+            mutableNextBreak.value = null
             player.pause()
-            player.volume = 1f
-            delay(silence)
+            setPauseAtEnd(false)
+            waitMillis(silence)
             // Still inside the break job, so a play/pause meanwhile cancels this check.
             val resume = resumeAllowed()
             breakJob = null
             onBreak = false
-            if (wakeLock.isHeld) wakeLock.release()
+            releaseWakeLock()
             mutableResumeAt.value = null
+            publish()
             val state = player.playbackState
             if (!resume || player.currentMediaItem == null ||
                 (state != Player.STATE_READY && state != Player.STATE_BUFFERING)
@@ -189,9 +193,7 @@ internal class MusicBreaks(
                 onHoldReleased()
                 return@launch
             }
-            player.volume = 0f
-            fadeInPending = true
-            player.play()
+            resumeWithFade(MusicBreakPolicy.fadeMillis(settings, random))
         }
     }
 
@@ -205,51 +207,53 @@ internal class MusicBreaks(
             false
         }
 
-    /** Returns whether a fade-out or break was running; restores full volume. */
-    private fun stopBreak(): Boolean {
-        val running = breakJob ?: return false
-        running.cancel()
-        breakJob = null
-        onBreak = false
-        if (wakeLock.isHeld) wakeLock.release()
-        mutableResumeAt.value = null
-        player.volume = 1f
-        return true
-    }
-
-    private fun stopFadeIn() {
-        fadeInJob?.cancel()
-        fadeInJob = null
-        fadeInPending = false
-        player.volume = 1f
-    }
-
-    private suspend fun ramp(fadeIn: Boolean, millis: Long) {
-        val steps = (millis / FADE_STEP_MILLIS).toInt().coerceAtLeast(1)
-        for (step in 1..steps) {
-            delay(millis / steps)
-            val progress = step.toFloat() / steps
-            player.volume = MusicBreakPolicy.gain(if (fadeIn) progress else 1f - progress)
+    /**
+     * Music left before the next break, for both dashboards. Checked in this order because a
+     * crossfade also arms the song-end pause while a music session is still counting.
+     */
+    private fun publish() {
+        mutableNextBreak.value = when {
+            !settings.enabled || breakJob != null -> null
+            clock != null -> NextBreak(musicLeft, clockStarted, counting = true)
+            musicLeft > 0 -> NextBreak(musicLeft, now(), counting = false)
+            pauseAtEnd() -> NextBreak(0, now(), counting = false)
+            else -> null
         }
     }
 
+    /** Returns whether a song-end pause or break was pending. */
+    private fun stopBreak(): Boolean {
+        val waiting = pauseAtEnd()
+        setPauseAtEnd(false)
+        val running = breakJob ?: return waiting
+        running.cancel()
+        breakJob = null
+        onBreak = false
+        releaseWakeLock()
+        mutableResumeAt.value = null
+        return true
+    }
+
     companion object {
-        private const val FADE_STEP_MILLIS = 100L
         private const val WAKE_MARGIN_MILLIS = 60_000L
         private val mutableResumeAt = MutableStateFlow<Long?>(null)
 
         /** `elapsedRealtime` when the running break ends; a projection of the service's scheduler. */
         val resumeAt = mutableResumeAt.asStateFlow()
+        private val mutableNextBreak = MutableStateFlow<NextBreak?>(null)
+
+        /** Music left before the next break; null while off, on a break or before the first song. */
+        val nextBreak = mutableNextBreak.asStateFlow()
     }
 }
 
 /**
  * The session's view of the player, so controller, notification and media-button play/pause reach
- * [MusicBreaks]. Pause goes first so full volume is restored only once the audio has stopped.
+ * [MusicBreaks]. PlaybackPlayer owns all audio envelopes, including a pause's fading tail.
  * A skip after a failed track re-prepares, since a seek alone leaves an errored player idle.
  */
 internal class UserCommandPlayer(
-    private val player: ExoPlayer, private val breaks: MusicBreaks,
+    private val player: PlaybackPlayer, private val breaks: MusicBreaks,
 ) : ForwardingPlayer(player) {
     /** A tapped song in a shuffled queue plays first; Media3 would start it mid order and skip the songs before it. */
     override fun setMediaItems(mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long) {
@@ -278,6 +282,11 @@ internal class UserCommandPlayer(
 
     override fun pause() {
         super.pause()
+        breaks.onUserPause()
+    }
+
+    override fun stop() {
+        super.stop()
         breaks.onUserPause()
     }
 

@@ -2,10 +2,11 @@ package dev.homedj.app
 
 import org.json.JSONObject
 
-/** Parses a song row of a LAN `tracks` or `downloads` reply; detail fields are optional. */
+/** Parses a song row of a LAN `tracks` or `downloads` reply; detail fields (and `failed`) are optional. */
 internal fun remoteSong(item: JSONObject): RemoteSong =
     RemoteSong(item.optString("id"), item.optString("title"), item.optBoolean("saved"), item.optBoolean("saving"),
-        item.optString("artist").take(200), item.optInt("duration").coerceIn(0, MAX_TRACK_SECONDS))
+        item.optString("artist").take(200), item.optInt("duration").coerceIn(0, MAX_TRACK_SECONDS),
+        item.optBoolean("failed"))
 
 /**
  * What Samsung just confirmed, shown before the next refresh: songs accepted for saving show
@@ -42,7 +43,36 @@ internal fun RemoteUiState.withSavesQueued(action: String, id: String, kind: Str
     }
 }
 
+/**
+ * Loaded rows a status poll re-reads: all of them (at least Downloaded's first page) once Samsung's
+ * downloads changed on either phone, else only the span of playlist rows still saving; null for none.
+ */
+internal fun RemoteUiState.songsToRefresh(
+    downloadsChanged: Boolean = downloadsRevision != null && songsDownloadsRevision != downloadsRevision,
+): IntRange? = when {
+    browserLoading -> null
+    browserMode == "downloads" -> if (downloadsChanged) 0..songs.lastIndex.coerceAtLeast(0) else null
+    browserMode != "tracks" || selectedPlaylistId == null -> null
+    downloadsChanged -> songs.indices.takeUnless { it.isEmpty() }
+    else -> songs.indexOfFirst { it.saving }.takeIf { it >= 0 }?.let { it..songs.indexOfLast(RemoteSong::saving) }
+}
+
+/** Downloaded takes Samsung's fresh rows in their new order; a playlist keeps its rows and updates them. */
+internal fun RemoteUiState.withFreshSongs(fresh: List<RemoteSong>, total: Int, counts: Pair<Int, Int>?): RemoteUiState =
+    if (browserMode == "downloads") copy(songs = fresh, browserTotal = total)
+    else fresh.associateBy(RemoteSong::id).let { byId ->
+        copy(songs = songs.map { byId[it.id] ?: it }, savedCount = counts?.first ?: savedCount,
+            savingCount = counts?.second ?: savingCount)
+    }
+
 /** A Samsung build without download management answers "Unknown command". */
 internal fun downloadChangeError(action: String, error: String): String =
     if (action in setOf("cancelSave", "removeSaved") && error == "Unknown command")
         "Update HomeDJ on Samsung to manage downloads." else error
+
+/** A Samsung build without playlist refresh answers "Unknown command". */
+internal fun refreshPlaylistError(error: String): String = when (error) {
+    "Unknown command", "Unknown library command" -> "Update HomeDJ on Samsung to refresh playlists."
+    "" -> "Samsung could not refresh this playlist."
+    else -> error
+}

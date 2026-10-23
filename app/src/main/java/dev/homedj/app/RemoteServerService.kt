@@ -12,6 +12,7 @@ import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.util.UnstableApi
@@ -33,9 +34,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -46,14 +51,16 @@ import org.json.JSONObject
  */
 class RemoteServerService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var server: ServerSocket? = null
+    @Volatile private var server: ServerSocket? = null
     private var mediaFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private val musicLibrary by lazy { RemoteLibraryCommands(applicationContext) }
+    private val presence by lazy { PresenceWatch(applicationContext) }
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val connections = Semaphore(6)
     private val castSocket = AtomicReference<Socket?>(null)
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private fun stopCast() {
         castSocket.getAndSet(null)?.let {
@@ -86,13 +93,39 @@ class RemoteServerService : Service() {
                 startForeground(42, notification)
             }
         } catch (failure: Exception) {
-            Log.e("HomeDJRemote", "Could not start remote foreground service", failure)
+            Log.e("HomeDJRemote", "Remote foreground start failed: " + failure.javaClass.simpleName)
             stopSelf()
             return
         }
-        // Wi-Fi power save drops or delays inbound packets while the screen is off, which shows
-        // up on OnePlus as connect timeouts. Android 14+ silently downgrades this to screen-on only.
-        try {
+        scope.launch(Dispatchers.Main) {
+            try {
+                ModeStore(this@RemoteServerService).mode.collect { mode ->
+                    if (!remoteServerAllowed(mode, RemotePrefs(this@RemoteServerService).enabled)) {
+                        stopSelf()
+                    } else if (mediaFuture == null) {
+                        startRemote()
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("HomeDJRemote", "Remote startup failed: " + failure.javaClass.simpleName)
+                stopSelf()
+            }
+        }
+    }
+
+    /** Main-thread startup runs once, after the persisted role and opt-in have been checked. */
+    private fun startRemote() {
+        // A listening socket/foreground notification does not keep the CPU awake. Hold this for
+        // the opted-in listener's lifetime, including pauses in music; onDestroy releases it.
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HomeDJ:remote").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        // Android 14 maps HIGH_PERF to a screen-on-only lock; only older devices benefit here.
+        if (Build.VERSION.SDK_INT < 34) try {
             @Suppress("DEPRECATION")
             val lock = getSystemService(WifiManager::class.java)
                 .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HomeDJ:remote")
@@ -107,29 +140,49 @@ class RemoteServerService : Service() {
         ).buildAsync()
         mediaFuture = future
         future.addListener({
+            if (mediaFuture !== future) return@addListener
             try {
                 controller = future.get()
             } catch (failure: Exception) {
                 Log.e("HomeDJRemote", "Remote Media3 session connection failed", failure)
             }
         }, mainExecutor)
+        scope.launch { listen() }
+        // Live light variation needs this service's wake/Wi-Fi locks; it ends with the service.
+        scope.launch { LightVariationRunner(applicationContext).run() }
+        // The light show also hears this phone's music through MusicPulse; artwork comes from its session.
         scope.launch {
-            ModeStore(this@RemoteServerService).mode.collect {
-                if (it != HomeDjMode.SERVER || !RemotePrefs(this@RemoteServerService).enabled) {
-                    stopSelf()
-                }
+            LightDanceRunner(applicationContext, songArt = {
+                withContext(Dispatchers.Main) { youTubeImageUrl(controller?.currentMediaItem?.mediaMetadata?.artworkUri?.toString()) }
+            }).run()
+        }
+        // House rules watch wall switches with the same locks and pause/resume through this player.
+        scope.launch(Dispatchers.Main) {
+            HouseRulesRunner(applicationContext, player = { controller }, casting = { castSocket.get() != null }).run()
+        }
+        scope.launch(Dispatchers.Main) {
+            val key = withContext(Dispatchers.IO) {
+                RemoteChannel.decodeKey(RemotePrefs(this@RemoteServerService).serverKey())
+            }
+            while (true) {
+                presence.tick(key, controller, castSocket.get() != null)
+                    ?.let { RemoteActivity.record(RemoteActivity.SAMSUNG, it) }
+                mutableOnePlus.update { it.copy(nearAt = presence.seenAt, detecting = presence.checkedIn,
+                    confirmedHomeAt = presence.confirmedHomeAt) }
+                delay(PRESENCE_TICK_MILLIS)
             }
         }
-        scope.launch { listen() }
     }
 
     private suspend fun listen() {
         try {
             val listener = ServerSocket(47188)
             server = listener
+            currentCoroutineContext().ensureActive()
             running.value = true
             val key = requireNotNull(RemoteChannel.decodeKey(RemotePrefs(this).serverKey()))
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val client = listener.accept()
                 if (!connections.tryAcquire()) {
                     client.close()
@@ -188,15 +241,40 @@ class RemoteServerService : Service() {
             ) {
                 return@withContext JSONObject().put("ok", false).put("error", "Server role inactive")
             }
+            mutableOnePlus.update { it.copy(lanAt = SystemClock.elapsedRealtime()) }
+            val action = request.optString("command")
+            // Newer controllers only; an older Samsung answers "Unknown command". Lights never touch playback.
+            if (action in Lights.REMOTE_COMMANDS) {
+                return@withContext Lights.handleRemote(this@RemoteServerService, request).also { reply ->
+                    // Previews fire on every editor change; only saved outcomes reach the activity feed.
+                    if (reply.optBoolean("ok") && action != "lights" && action != "lightsPreview") {
+                        RemoteActivity.record(RemoteActivity.ONEPLUS, reply.optString("message", action))
+                    }
+                }
+            }
+            if (action in HouseRules.REMOTE_COMMANDS) {
+                return@withContext HouseRules.handleRemote(this@RemoteServerService, request).also { reply ->
+                    if (action == "houseRulesSave" && reply.optBoolean("ok")) {
+                        RemoteActivity.record(RemoteActivity.ONEPLUS, reply.optString("message"))
+                    }
+                }
+            }
             val active = controller ?: return@withContext JSONObject()
                 .put("ok", false).put("error", "Playback service not ready")
-            val action = request.optString("command")
             if (action == "audioStart") {
                 if (!castSocket.compareAndSet(null, socket)) {
                     return@withContext JSONObject().put("ok", false).put("error", "Another cast is running")
                 }
-                active.pause()
+                // A live cast takes the speakers immediately; stop retains the queue/position.
+                active.stop()
                 RemoteActivity.record(RemoteActivity.ONEPLUS, "Live audio started")
+                return@withContext JSONObject().put("ok", true)
+            }
+            // Newer controllers only; an older Samsung answers "Unknown command".
+            if (action == "presence") {
+                presence.checkIn(request, active, castSocket.get() != null)
+                    ?.let { RemoteActivity.record(RemoteActivity.ONEPLUS, it) }
+                mutableOnePlus.update { it.copy(confirmedHomeAt = presence.confirmedHomeAt) }
                 return@withContext JSONObject().put("ok", true)
             }
             // Newer controllers send the index they showed; a skip aimed at an older song is refused.
@@ -209,7 +287,7 @@ class RemoteServerService : Service() {
                 stopCast()
             }
             if (action in setOf("catalog", "tracks", "downloads", "playTrack", "playPlaylist",
-                    "saveTrack", "savePlaylist", "importPlaylist", "cancelSave", "removeSaved")) {
+                    "saveTrack", "savePlaylist", "importPlaylist", "cancelSave", "removeSaved", "refreshPlaylist")) {
                 return@withContext musicLibrary.handle(request, active).also { reply ->
                     if (reply.optBoolean("ok") && action !in setOf("catalog", "tracks", "downloads")) {
                         RemoteActivity.record(RemoteActivity.ONEPLUS, reply.optString("message", action))
@@ -290,6 +368,13 @@ class RemoteServerService : Service() {
                 // Optional fields; older controllers ignore them.
                 .put("index", active.currentMediaItemIndex)
                 .put("library", SavedPlaylistStore.shared(this@RemoteServerService).revision.value)
+                .put("downloads", OfflineAudioLibrary.revision.value)
+                .also { reply ->
+                    MusicBreaks.nextBreak.value?.let {
+                        reply.put("nextBreakSeconds",
+                            MusicBreakPolicy.secondsUntilBreak(it, SystemClock.elapsedRealtime()))
+                    }
+                }
                 .put("activity", RemoteActivity.toJson(RemoteActivity.entries.value, System.currentTimeMillis()))
                 .also { reply ->
                     val metadata = active.currentMediaItem?.mediaMetadata
@@ -303,22 +388,31 @@ class RemoteServerService : Service() {
 
     override fun onDestroy() {
         running.value = false
+        mutableOnePlus.value = OnePlusSeen()
         scope.cancel() // First, so the listener treats the socket close below as a normal stop.
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        wifiLock?.release()
+        wifiLock = null
         server?.close()
         stopCast()
+        presence.stop()
         clients.forEach { it.close() }
         mediaFuture?.let(MediaController::releaseFuture)
         mediaFuture = null
         controller = null
-        wifiLock?.release()
-        wifiLock = null
         super.onDestroy()
     }
 
     companion object {
         private const val HANDSHAKE_MILLIS = 8_000L
+        private const val PRESENCE_TICK_MILLIS = 15_000L
         internal const val STALE_SONG = "Song already changed on Samsung"
         val running = MutableStateFlow(false)
+        private val mutableOnePlus = MutableStateFlow(OnePlusSeen())
+
+        /** When the paired OnePlus last reached this listener; a projection for Samsung's dashboard. */
+        internal val onePlus = mutableOnePlus.asStateFlow()
         fun setEnabled(context: Context, enabled: Boolean) {
             val app = context.applicationContext
             val prefs = RemotePrefs(app)
